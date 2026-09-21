@@ -10,12 +10,12 @@ The project demonstrates:
 
 - MCP tools
 - MCP prompts
+- Prompt Template
 - Local SQLite storage
 - Input validation
 - SQL injection protection
 - Rate limiting
 - Safe error handling
-- Prompt Template
 - Secret/configuration management using `.env`
 - File path management using `pathlib.Path`
 - Integration with Claude Desktop
@@ -309,6 +309,28 @@ Provides reusable instructions to help Claude organize a graduate student's task
 
 ```text
 Use my current tasks and create a balanced plan for my day.
+```
+### Prompt Template
+
+The `plan_my_day` prompt uses the following reusable template:
+
+```text
+You are helping a graduate student organize their day based on their current task list.
+
+Planning priority: {priority}
+
+Review the available tasks and create a realistic daily plan.
+
+Guidelines:
+- Prioritize tasks with the nearest deadlines.
+- Identify the three most important tasks.
+- Group similar tasks when possible.
+- Separate academic work, meetings, and personal tasks.
+- Include reasonable breaks.
+- Avoid scheduling every minute of the day.
+- If everything cannot realistically be completed, suggest which tasks should be moved to another day.
+
+Return the plan in a clear, easy-to-follow format.
 ```
 
 The prompt focuses on:
@@ -614,28 +636,6 @@ The placeholder paths must be replaced with the absolute paths on the user's mac
 The actual Claude Desktop configuration file is stored separately from the GitHub repository.
 
 ---
-## Prompt Template
-
-The `plan_my_day` prompt uses the following reusable template:
-
-```text
-You are helping a graduate student organize their day based on their current task list.
-
-Planning priority: {priority}
-
-Review the available tasks and create a realistic daily plan.
-
-Guidelines:
-- Prioritize tasks with the nearest deadlines.
-- Identify the three most important tasks.
-- Group similar tasks when possible.
-- Separate academic work, meetings, and personal tasks.
-- Include reasonable breaks.
-- Avoid scheduling every minute of the day.
-- If everything cannot realistically be completed, suggest which tasks should be moved to another day.
-
-Return the plan in a clear, easy-to-follow format.
-```
 
 # Security Best Practices
 
