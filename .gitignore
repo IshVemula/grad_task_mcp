@@ -6,10 +6,14 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
-.venv
+# Virtual environment
+.venv/
 
-# Project-specific / local files
-.DS_Store
+# Local database
 tasks.db
+
+# Secrets
 .env
+
+# macOS
+.DS_Store

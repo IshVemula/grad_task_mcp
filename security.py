@@ -2,6 +2,7 @@ import re
 import time
 from collections import deque
 
+
 ALLOWED_CATEGORIES = {
     "academic",
     "meeting",
@@ -19,9 +20,10 @@ RATE_WINDOW_SECONDS = 60
 request_times = deque()
 
 
-# Input validation logic (validate_title, validate_category) generated with ChatGPT (OpenAI).
 def validate_title(title: str) -> str:
-    """Validate and clean a task title."""
+    """
+    Validate and clean a task title.
+    """
 
     if not isinstance(title, str):
         raise ValueError("Task title must be text.")
@@ -43,7 +45,9 @@ def validate_title(title: str) -> str:
 
 
 def validate_category(category: str) -> str:
-    """Ensure category is one of the supported values."""
+    """
+    Validate a task category.
+    """
 
     category = category.strip().lower()
 
@@ -56,9 +60,10 @@ def validate_category(category: str) -> str:
     return category
 
 
-# Rate-limiting logic (sliding-window counter) generated with ChatGPT (OpenAI).
 def check_rate_limit():
-    """Allow a maximum number of write requests per minute."""
+    """
+    Allow at most five state-changing operations every 60 seconds.
+    """
 
     now = time.time()
 
@@ -67,7 +72,7 @@ def check_rate_limit():
 
     if len(request_times) >= RATE_LIMIT:
         raise ValueError(
-            "Rate limit exceeded. Please wait before adding more tasks."
+            "Rate limit exceeded. Please wait before modifying more tasks."
         )
 
     request_times.append(now)

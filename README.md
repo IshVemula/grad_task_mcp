@@ -1,409 +1,1060 @@
-# Grad Student Task Manager (MCP Server)
+# Grad Student Task Manager MCP
 
-A small [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that lets an AI assistant (like Claude Desktop) read and add items to a graduate student's task list. It was built as a learning project to demonstrate a working MCP server *and* to explore two common web-app security concerns — SQL injection and rate limiting — in an MCP context.
+## Overview
 
-This README assumes you've never used MCP before and walks through the concepts as well as the setup.
+The **Grad Student Task Manager** is a Python-based Model Context Protocol (MCP) server built in the **Personal Productivity** domain.
 
-## Table of contents
+The server allows an MCP client such as Claude Desktop to manage a graduate student's tasks through natural-language requests.
 
-- [Project overview](#project-overview)
-- [MCP architecture, explained](#mcp-architecture-explained)
-- [Tools and prompt](#tools-and-prompt)
-- [Prerequisites](#prerequisites)
-- [Installation and setup with uv](#installation-and-setup-with-uv)
-- [Running the MCP Inspector](#running-the-mcp-inspector)
-- [Connecting to Claude Desktop](#connecting-to-claude-desktop)
-- [Example tool calls](#example-tool-calls)
-- [Input sanitization](#input-sanitization)
-- [SQL injection exploit demonstration](#sql-injection-exploit-demonstration)
-- [Rate limiting](#rate-limiting)
-- [Rate-limit exploit demonstration](#rate-limit-exploit-demonstration)
-- [Why authentication is not required](#why-authentication-is-not-required)
-- [Project limitations](#project-limitations)
-- [Repository structure](#repository-structure)
+The project demonstrates:
 
-## Project overview
+- MCP tools
+- MCP prompts
+- Local SQLite storage
+- Input validation
+- SQL injection protection
+- Rate limiting
+- Safe error handling
+- Secret/configuration management using `.env`
+- File path management using `pathlib.Path`
+- Integration with Claude Desktop
+- Testing through MCP Inspector
 
-Graduate students juggle a mix of task types — problem sets, advisor meetings, forms, career-fair prep, and everything in between. This project is a tiny task manager, exposed as an **MCP server**, so that an AI assistant can add tasks and list them on the student's behalf, in plain conversation, instead of the student switching to a separate to-do app.
+---
 
-Concretely, the server:
+## Domain
 
-- stores tasks (title, category, optional due date) in a local SQLite database,
-- exposes two **tools** an AI client can call — `add_task` and `list_tasks` — and
-- exposes one **prompt** — `plan_my_day` — that asks the assistant to turn the current task list into a daily plan.
+**Personal Productivity**
 
-Because the server accepts free-text input from a student (relayed through an AI model, which itself is relaying whatever the student typed), it's a good small case study for input handling: what happens if someone's "task title" is actually an attempted SQL injection string, and what stops a client from hammering the server with requests. Both are covered below, with working demonstrations.
+The server focuses on graduate student task management.
 
-## MCP architecture, explained
+It allows users to:
 
-If you've never touched MCP before, the mental model is closer to "a very small, structured API for AI assistants" than anything exotic.
+- Add tasks
+- View tasks
+- Update tasks
+- Mark tasks as completed
+- Delete tasks
+- Use a reusable prompt to organize tasks into a daily plan
 
-**The three roles:**
+---
 
-- **Host** — the AI application the person is actually using. In this project, that's Claude Desktop.
-- **Client** — the piece inside the host that speaks the MCP protocol and manages a 1:1 connection to a server. Claude Desktop creates one client per configured server.
-- **Server** — the program that exposes capabilities (in our case, `server.py`, running as its own local process). A server doesn't know or care which AI model is on the other end; it just answers requests.
+## Architecture
 
-**How they talk:** the client and server exchange JSON-RPC 2.0 messages. This project uses the **stdio transport**, which means Claude Desktop literally starts `server.py` as a child process and talks to it over that process's standard input/output — no network socket, no port, no URL. (MCP also supports an HTTP-based transport for servers that live elsewhere on a network, but this project doesn't use it.)
+The system follows this general flow:
 
+```text
+User
+  |
+  v
+Claude Desktop
+  |
+  | MCP over stdio
+  v
+Python MCP Server
+  |
+  |-- server.py
+  |-- security.py
+  |-- database.py
+  |-- config.py
+  |
+  v
+SQLite Database
 ```
-┌─────────────────────┐        JSON-RPC over stdio       ┌───────────────────────┐
-│   Claude Desktop     │  ───────────────────────────▶   │   grad-task-mcp        │
-│   (host + MCP client)│  ◀───────────────────────────   │   server.py (server)   │
-└─────────────────────┘                                   └───────────┬───────────┘
-                                                                        │
-                                                                        ▼
-                                                                 tasks.db (SQLite)
+
+### Components
+
+#### User
+
+The user interacts with Claude Desktop using natural language.
+
+Example:
+
+```text
+Add an academic task called "Finish MCP documentation" due September 24, 2026.
 ```
 
-**What a server can expose**, per the spec:
+#### Claude Desktop
 
-- **Tools** — functions the model can *call* to take an action or fetch data (here: `add_task`, `list_tasks`). The model decides when to call them based on the conversation.
-- **Resources** — data the client can read, more like a file or API response than an action (this project doesn't define any).
-- **Prompts** — reusable, parameterized prompt templates the *user* can invoke on demand (here: `plan_my_day`).
+Claude Desktop acts as the **MCP client**.
 
-When Claude Desktop connects to this server, it asks "what tools/prompts do you have?", the server answers with their names, descriptions, and input schemas (auto-generated from the Python function signatures and docstrings), and from then on Claude can call `add_task` or `list_tasks` mid-conversation whenever it decides that's the right thing to do.
+It:
 
-## Tools and prompt
+- Receives the user's natural-language request
+- Determines which MCP tool should be used
+- Calls the MCP server
+- Receives the MCP response
+- Presents the result back to the user
 
-### `add_task(title: str, category: str, due_date: str | None = None) -> dict`
+#### `server.py`
 
-Adds a new task.
+This is the main MCP server file.
 
-- `title` — free text, required.
-- `category` — must be one of: `academic`, `meeting`, `life_admin`, `recreational`, `people`, `other`.
-- `due_date` — optional, must be `YYYY-MM-DD` if provided.
+It:
 
-Returns `{"success": true, "task_id": <int>, "message": "..."}` on success, or `{"success": false, "error": "..."}` if validation fails.
+- Creates the MCP server
+- Registers MCP tools
+- Registers the MCP prompt
+- Handles requests and responses
+- Connects security and database functionality
 
-### `list_tasks(category: str | None = None) -> dict`
+The server currently exposes four tools:
 
-Lists all *incomplete* tasks, soonest due date first (tasks with no due date sort last). Pass `category` to filter to one category.
+- `add_task()`
+- `list_tasks()`
+- `update_task()`
+- `delete_task()`
 
-Returns `{"success": true, "count": <int>, "tasks": [...]}`.
+It also exposes one prompt:
 
-### Prompt: `plan_my_day(priority: str = "balanced") -> str`
+- `plan_my_day()`
 
-Not a tool — this is a **prompt template** the user (not the model) invokes, typically from a "/" command or prompt picker in the client UI. It doesn't touch the database itself; it returns a block of instructions telling the assistant how to turn the student's tasks into a realistic daily plan (prioritize deadlines, group similar tasks, include breaks, call out the top three priorities, etc.), with `priority` letting the user nudge the tone (e.g. `"deadline-focused"` vs `"balanced"`).
+#### `security.py`
 
-## Prerequisites
+This file contains security-related logic.
 
-- **Python 3.12+** (pinned via `.python-version`)
-- **[uv](https://docs.astral.sh/uv/)** — used for dependency management and running the project. Install it with:
-  ```bash
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  ```
-  or see the [uv installation docs](https://docs.astral.sh/uv/getting-started/installation/) for other platforms.
-- **Claude Desktop** (or another MCP-compatible host), if you want to connect the server to an assistant rather than just testing it standalone.
-- **Node.js/npx**, only if you plan to run the standalone MCP Inspector via `npx` (see below).
+It is responsible for:
 
-## Installation and setup with uv
+- Input validation
+- Task title sanitization
+- Category validation
+- Rate limiting
 
-From the project root:
+#### `database.py`
+
+This file handles database access.
+
+It:
+
+- Creates the SQLite database
+- Creates the `tasks` table
+- Opens database connections
+- Uses parameterized SQL queries
+- Reads and writes task data
+
+#### `config.py`
+
+This file handles local configuration.
+
+It:
+
+- Loads values from `.env`
+- Uses `python-dotenv`
+- Uses `pathlib.Path`
+- Avoids using `os.path`
+
+#### `tasks.db`
+
+This is the local SQLite database.
+
+It stores:
+
+- Task ID
+- Task title
+- Category
+- Due date
+- Completion status
+
+The database file is excluded from Git.
+
+---
+
+## MCP Tools
+
+## 1. Add Task
+
+### Tool
+
+```text
+add_task()
+```
+
+### Purpose
+
+Creates a new task.
+
+### Inputs
+
+- `title`
+- `category`
+- optional `due_date`
+
+### Supported Categories
+
+- `academic`
+- `meeting`
+- `life_admin`
+- `recreational`
+- `people`
+- `other`
+
+The category is defined using a fixed list of values so MCP clients can display it as a dropdown where supported.
+
+The due date is defined as a Python `date` type so MCP clients can treat it as a date input where supported.
+
+### Example
+
+```text
+Add an academic task called "Finish Decision Analysis assignment" due September 25, 2026.
+```
+
+---
+
+## 2. List Tasks
+
+### Tool
+
+```text
+list_tasks()
+```
+
+### Purpose
+
+Returns incomplete tasks.
+
+The user can optionally filter tasks by category.
+
+### Example
+
+```text
+Show me all of my academic tasks.
+```
+
+The tool is treated as read-only because it does not modify stored data.
+
+---
+
+## 3. Update Task
+
+### Tool
+
+```text
+update_task()
+```
+
+### Purpose
+
+Updates an existing task using its unique task ID.
+
+The tool can update:
+
+- title
+- category
+- due date
+- completion status
+
+### Example
+
+```text
+Mark task 4 as completed.
+```
+
+or:
+
+```text
+Change task 4's title to "Finish final MCP documentation".
+```
+
+A separate `complete_task()` tool was not created because completion is simply one type of update.
+
+This keeps the MCP interface smaller and avoids unnecessary duplicate functionality.
+
+---
+
+## 4. Delete Task
+
+### Tool
+
+```text
+delete_task()
+```
+
+### Purpose
+
+Deletes a task using its unique task ID.
+
+### Example
+
+```text
+Delete task 7.
+```
+
+This tool is considered destructive because it permanently removes data.
+
+---
+
+## MCP Prompt
+
+## Plan My Day
+
+### Prompt
+
+```text
+plan_my_day()
+```
+
+### Purpose
+
+Provides reusable instructions to help Claude organize a graduate student's tasks into a realistic daily plan.
+
+### Priority Options
+
+- `balanced`
+- `deadlines`
+- `academic`
+- `personal`
+
+### Example
+
+```text
+Use my current tasks and create a balanced plan for my day.
+```
+
+The prompt focuses on:
+
+- Upcoming deadlines
+- Realistic scheduling
+- Grouping similar work
+- Reasonable breaks
+- Separating academic, meeting, and personal responsibilities
+- Identifying the three most important tasks
+- Moving lower-priority work to another day when necessary
+
+---
+
+## Project Structure
+
+```text
+grad-task-mcp/
+|
+|-- server.py
+|-- database.py
+|-- security.py
+|-- config.py
+|-- test_security.py
+|
+|-- .env.example
+|-- .gitignore
+|
+|-- README.md
+|-- requirements.txt
+|-- claude_desktop_config.json
+|-- pyproject.toml
+|-- uv.lock
+```
+
+The following files may exist locally but are intentionally excluded from Git:
+
+```text
+.env
+tasks.db
+.venv/
+__pycache__/
+```
+
+---
+
+## Requirements
+
+The project requires:
+
+- Python 3.10 or newer
+- `uv`
+- Claude Desktop
+- Node.js / `npx` for MCP Inspector
+
+---
+
+## Installation
+
+### 1. Clone the Repository
 
 ```bash
-# 1. Clone or open the project
+git clone YOUR_GITHUB_REPOSITORY_URL
 cd grad-task-mcp
-
-# 2. Let uv create a virtual environment and install dependencies
-#    from pyproject.toml / uv.lock
-uv sync
-
-# 3. (Optional) confirm it installed correctly
-uv run python -c "import mcp; print('mcp package OK')"
 ```
 
-`uv sync` reads `pyproject.toml` and `uv.lock` and creates a `.venv/` with exactly the pinned dependency versions — you shouldn't need to `pip install` anything by hand. From here on, prefix commands with `uv run` so they execute inside that managed environment.
+Replace `YOUR_GITHUB_REPOSITORY_URL` with the actual GitHub repository URL.
 
-To run the server directly (mostly useful for a quick sanity check — MCP servers expect a client on the other end of stdio, so running it directly will just sit there waiting):
+### 2. Install Dependencies
+
+Using `uv`:
 
 ```bash
-uv run server.py
+uv sync
 ```
 
-## Running the MCP Inspector
+If required, install Python through `uv`:
 
-The [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector) is a small web UI for talking to an MCP server directly — no AI model involved — so you can call tools, inspect their schemas, and check responses while you're developing.
+```bash
+uv python install 3.12
+```
 
-Because this project depends on `mcp[cli]`, the easiest way to launch it is through the `mcp` CLI's `dev` command, which starts your server *and* opens the Inspector against it in one step:
+The project can then be run using the Python environment managed by `uv`.
+
+### 3. Create the Local Environment File
+
+The repository includes:
+
+```text
+.env.example
+```
+
+Create a local `.env` file based on it.
+
+Example:
+
+```text
+APP_NAME=Grad Student Task Manager
+```
+
+The local `.env` file must not be committed to Git.
+
+---
+
+## Secret Management
+
+The current server does not require external API credentials because it runs locally and uses a local SQLite database.
+
+However, the project is structured to safely support secrets or credentials in the future.
+
+Local values are stored in:
+
+```text
+.env
+```
+
+The `.env` file is excluded from version control using `.gitignore`.
+
+A safe example file is included in the repository:
+
+```text
+.env.example
+```
+
+Example:
+
+```text
+APP_NAME=Grad Student Task Manager
+
+# Example future secret:
+# SOME_API_KEY=replace_with_your_key
+```
+
+File paths are constructed using:
+
+```python
+from pathlib import Path
+```
+
+instead of:
+
+```python
+os.path
+```
+
+This follows the project's secret-management and file-path requirements.
+
+---
+
+## Database
+
+The project uses SQLite.
+
+The database is created automatically when the server starts.
+
+The main table is:
+
+```text
+tasks
+```
+
+It contains:
+
+```text
+id
+title
+category
+due_date
+completed
+```
+
+The database is stored locally as:
+
+```text
+tasks.db
+```
+
+The database file is excluded from Git.
+
+---
+
+## Running the MCP Server
+
+Run:
+
+```bash
+uv run python server.py
+```
+
+The server communicates using MCP over standard input/output (`stdio`).
+
+Because it is a `stdio` server, it may appear to do nothing when run directly.
+
+This is expected.
+
+The server is waiting for an MCP client to communicate with it.
+
+Use:
+
+```text
+Control + C
+```
+
+to stop the server.
+
+---
+
+## Testing with MCP Inspector
+
+Run:
 
 ```bash
 uv run mcp dev server.py
 ```
 
-This prints a local URL (typically `http://localhost:5173`); open it in a browser. From there you can:
+MCP Inspector can be used to verify that the server exposes:
 
-1. See the connected server's declared tools (`add_task`, `list_tasks`) and prompt (`plan_my_day`), with their schemas.
-2. Fill in a form for a tool call (e.g. `title`, `category`, `due_date`) and click **Run** to call it against the real server and database.
-3. Read the raw JSON-RPC request/response for each call — useful for seeing exactly what the client sent and what the server returned.
+### Tools
 
-If `mcp dev` isn't available in your environment, you can instead run the Inspector standalone and point it at the server's launch command:
+- Add Task
+- List Tasks
+- Update Task
+- Delete Task
 
-```bash
-npx @modelcontextprotocol/inspector uv run server.py
+### Prompt
+
+- Plan My Day
+
+The Inspector is also useful for testing exact inputs and security exploit scenarios.
+
+---
+
+## Claude Desktop Integration
+
+The server can be accessed through Claude Desktop.
+
+Claude Desktop acts as the MCP client and can automatically choose the appropriate tool based on natural-language requests.
+
+Examples:
+
+### Add Task
+
+```text
+Add an academic task called "Finish MCP documentation" due September 24, 2026.
 ```
 
-Either approach talks to the *same* `server.py` — the Inspector is just standing in for the AI client.
+### List Tasks
 
-## Connecting to Claude Desktop
+```text
+Show me all of my academic tasks.
+```
 
-Claude Desktop launches local MCP servers itself, based on a config file, then talks to them exactly the way described above (stdio transport). To register this server:
+### Update Task
 
-1. Open Claude Desktop's MCP server configuration (**Settings → Developer → Edit Config**, or edit `claude_desktop_config.json` directly — this project includes a placeholder file at the repo root for reference).
-2. Add an entry that tells Claude Desktop how to start the server, using `uv run` and the **absolute path** to the project:
+```text
+Mark task 3 as completed.
+```
 
-   ```json
-   {
-     "mcpServers": {
-       "grad-student-task-manager": {
-         "command": "uv",
-         "args": [
-           "--directory",
-           "/absolute/path/to/grad-task-mcp",
-           "run",
-           "server.py"
-         ]
-       }
-     }
-   }
-   ```
+### Rename Task
 
-   Replace `/absolute/path/to/grad-task-mcp` with wherever you actually have this project checked out. Using `uv --directory ... run` (rather than relying on your shell's current working directory) is important — Claude Desktop launches the command from its own working directory, not this one.
-3. Save the file and fully restart Claude Desktop (quit, don't just close the window).
-4. Look for a small tools/plug icon in the chat input, or check **Settings → Developer**, to confirm "Grad Student Task Manager" shows up as a connected server. If it doesn't, check Claude Desktop's MCP logs (**Settings → Developer → Open Logs Folder**) for the startup error — most often it's a wrong path or `uv` not being on `PATH`.
-5. Once connected, just talk to Claude normally — e.g. "Add a task: finish problem set 3, due Friday" — and Claude will call `add_task` on your behalf when it judges that's the right action.
+```text
+Change task 3's title to "Finish final MCP documentation".
+```
 
-## Example tool calls
+### Delete Task
 
-These are the JSON arguments a client sends when calling each tool (what you'd type into the Inspector's form, or what Claude constructs behind the scenes).
+```text
+Delete task 5.
+```
 
-**Add a task with a due date:**
+---
+
+## Claude Desktop Configuration
+
+The repository includes an example configuration file:
+
+```text
+claude_desktop_config.json
+```
+
+Example:
 
 ```json
-// call: add_task
 {
-  "title": "Finish MCP assignment",
-  "category": "academic",
-  "due_date": "2026-09-19"
+  "mcpServers": {
+    "Grad Student Task Manager": {
+      "command": "/ABSOLUTE/PATH/TO/uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp[cli]",
+        "mcp",
+        "run",
+        "/ABSOLUTE/PATH/TO/grad-task-mcp/server.py"
+      ]
+    }
+  }
 }
 ```
 
-```json
-// response
-{
-  "success": true,
-  "task_id": 1,
-  "message": "Task added successfully."
-}
-```
+The placeholder paths must be replaced with the absolute paths on the user's machine.
 
-**Add a task with no due date:**
+The actual Claude Desktop configuration file is stored separately from the GitHub repository.
 
-```json
-// call: add_task
-{
-  "title": "Call mom",
-  "category": "people"
-}
-```
+---
 
-**List everything:**
+# Security Best Practices
 
-```json
-// call: list_tasks
-{}
-```
+The project implements two primary best practices:
 
-```json
-// response
-{
-  "success": true,
-  "count": 2,
-  "tasks": [
-    { "id": 1, "title": "Finish MCP assignment", "category": "academic", "due_date": "2026-09-19" },
-    { "id": 2, "title": "Call mom", "category": "people", "due_date": null }
-  ]
-}
-```
+1. Input sanitization and SQL injection protection
+2. Rate limiting
 
-**List just one category:**
+---
 
-```json
-// call: list_tasks
-{ "category": "academic" }
-```
+## Best Practice 1: Input Sanitization and SQL Injection Protection
 
-**Invalid category (rejected before it touches the database):**
+User-provided task titles and categories are validated before database operations.
 
-```json
-// call: add_task
-{ "title": "Board the shuttle", "category": "transportation" }
-```
+Task titles:
 
-```json
-// response
-{
-  "success": false,
-  "error": "Category must be one of: academic, life_admin, meeting, other, people, recreational"
-}
-```
+- cannot be empty
+- cannot exceed the maximum length
+- have control characters removed
 
-## Input sanitization
+Categories must match one of the supported categories.
 
-Validation lives in `security.py` and runs *before* anything touches the database:
+The database also uses **parameterized SQL queries**.
 
-- **`validate_title`**
-  - Rejects non-string input.
-  - Strips leading/trailing whitespace; rejects an empty (or whitespace-only) result.
-  - Enforces a maximum length of 200 characters.
-  - Strips ASCII control characters (`\x00`–`\x1f`, `\x7f`) with a regex, so stray characters like null bytes or escape sequences can't sneak into stored titles.
-- **`validate_category`**
-  - Normalizes case and whitespace, then checks the result against a fixed allow-list (`academic`, `meeting`, `life_admin`, `recreational`, `people`, `other`). Anything else is rejected outright — this is a classic allow-list, not a deny-list, so there's no way to smuggle in an unexpected value.
-- **`due_date`** is validated in `server.py` itself, by parsing it with `datetime.strptime(due_date, "%Y-%m-%d")` — if it doesn't match that exact format, the call fails with a clear error instead of storing a malformed date.
-
-**Worth being precise about:** the title sanitizer above cleans up *formatting* (whitespace, length, control characters) — it does **not** strip out characters like `'`, `;`, or `--` that would matter for SQL injection. That's deliberate, not an oversight: this project's actual injection defense lives one layer down, in how the database query is built (see the next section). Conflating "we sanitized the input" with "we're safe from injection" is a common and dangerous mistake, so it's worth being explicit that these are two different mechanisms here.
-
-## SQL injection exploit demonstration
-
-**The attempt.** Suppose a task title is a classic SQL injection payload:
-
-```json
-// call: add_task
-{
-  "title": "'); DROP TABLE tasks; --",
-  "category": "academic",
-  "due_date": "2026-09-29"
-}
-```
-
-`validate_title` only strips whitespace/control characters/length — none of which this string has in a way that changes it — so the string is passed through to the database layer essentially unchanged.
-
-**Why it's harmless here.** The insert in `server.py` uses a **parameterized query**:
+Example:
 
 ```python
-cursor = connection.execute(
+connection.execute(
     """
-    INSERT INTO tasks (title, category, due_date)
+    INSERT INTO tasks (
+        title,
+        category,
+        due_date
+    )
     VALUES (?, ?, ?)
     """,
-    (safe_title, safe_category, due_date),
+    (
+        safe_title,
+        safe_category,
+        due_date_value,
+    ),
 )
 ```
 
-The `?` placeholders mean the title is handed to SQLite as a *data value* through the driver's binding mechanism, never spliced into the SQL text itself. SQLite has no opportunity to interpret `'`, `;`, or `--` as syntax, because as far as the query parser is concerned, they never appear in the SQL statement at all — they're sitting in a separate parameter slot. This is the actual fix for SQL injection; it's not something `validate_title` is doing.
+User-provided values are passed separately from the SQL query.
 
-**Confirming it.** Adding that title, then listing tasks, returns it back as an inert string:
+This prevents user input from being interpreted as executable SQL.
 
-```json
-// response to add_task
-{ "success": true, "task_id": 2, "message": "Task added successfully." }
+---
 
-// response to list_tasks
-{
-  "success": true,
-  "count": 1,
-  "tasks": [
-    { "id": 2, "title": "'); DROP TABLE tasks; --", "category": "academic", "due_date": "2026-09-29" }
-  ]
-}
+## SQL Injection Exploit Test
+
+A malicious task title can be submitted:
+
+```text
+'); DROP TABLE tasks; --
 ```
 
-The `tasks` table is untouched — no rows dropped, no schema change, and the string is stored and returned as ordinary text, exactly like any other title. `test_security.py` includes `test_sql_injection_string_is_treated_as_text`, which asserts this same payload survives `validate_title` unchanged (i.e. sanitization isn't expected to catch it), and the parameterized query is what keeps that safe.
+A vulnerable application might interpret this as SQL and attempt to delete the `tasks` table.
 
-**For contrast — what *would* be vulnerable:** if `server.py` instead built the query with string formatting, e.g.
+In this server, the text is treated only as task data.
 
-```python
-# DO NOT DO THIS — vulnerable, shown only for comparison
-connection.execute(
-    f"INSERT INTO tasks (title, category, due_date) VALUES ('{safe_title}', '{safe_category}', '{due_date}')"
-)
+After submitting the malicious string:
+
+```text
+'); DROP TABLE tasks; --
 ```
 
-then that same payload would close the string literal early and the `DROP TABLE tasks` statement would actually execute. This project doesn't do that anywhere — every query in `database.py`/`server.py` uses `?` placeholders — but it's the difference that matters.
+the `list_tasks()` tool continues to work and the database remains intact.
 
-## Rate limiting
+This demonstrates that parameterized SQL prevents the injection attack.
 
-`check_rate_limit()` in `security.py` throttles **write** traffic (it's only called from `add_task`, not `list_tasks`):
+---
 
-```python
-RATE_LIMIT = 5
-RATE_WINDOW_SECONDS = 60
-request_times = deque()
+## Best Practice 2: Rate Limiting
+
+The server limits state-changing operations to:
+
+```text
+5 operations per 60 seconds
 ```
 
-It's a **sliding-window counter**: every call appends a timestamp to `request_times`, first dropping any timestamps older than 60 seconds. If 5 or more timestamps remain in that trailing 60-second window, the 6th call raises `ValueError("Rate limit exceeded. Please wait before adding more tasks.")` before the task is validated or stored. In effect: at most 5 `add_task` calls per rolling minute.
+Rate limiting applies to:
 
-Note the check happens *first* in `add_task`, before `validate_title`/`validate_category` — so even a call that would otherwise fail validation still consumes one of the 5 slots.
+- `add_task()`
+- `update_task()`
+- `delete_task()`
 
-## Rate-limit exploit demonstration
+The read-only `list_tasks()` operation is not rate limited.
 
-The limiter has two properties worth calling out, because together they make it easy to bypass:
+This is intentional because reading information does not modify application state.
 
-1. **It's in-memory, not persisted.** `request_times` is a plain Python `deque` living in the server process's memory — nothing is written to `tasks.db` or disk.
-2. **It's global, not per-client or per-session.** There's a single counter for the entire process; it has no concept of "who" is calling.
+---
 
-**The exploit:** restart the server process, and the limit resets instantly — with zero timestamps in the (brand-new) `request_times`, you immediately have another full budget of 5 calls.
+## Rate-Limit Exploit Test
 
-Concretely, with the Inspector or Claude Desktop connected:
+A user or AI agent can attempt more than five write operations within 60 seconds.
+
+For example:
+
+```text
+Request 1 -> accepted
+Request 2 -> accepted
+Request 3 -> accepted
+Request 4 -> accepted
+Request 5 -> accepted
+Request 6 -> blocked
+```
+
+The sixth request returns an error similar to:
+
+```text
+Rate limit exceeded. Please wait before modifying more tasks.
+```
+
+This reduces the risk of:
+
+- accidental loops
+- excessive repeated writes
+- runaway agent behavior
+- basic request abuse
+
+---
+
+## Error Handling
+
+The server avoids exposing unnecessary internal error information.
+
+For example, database exceptions are not returned directly to the user.
+
+Instead of exposing internal SQLite details, the server returns messages such as:
+
+```text
+The task could not be saved because of a database error.
+```
+
+This improves usability and avoids disclosing unnecessary implementation details.
+
+---
+
+## Authentication
+
+No external authentication is currently required.
+
+The server:
+
+- runs locally
+- communicates through `stdio`
+- stores information locally in SQLite
+- does not access third-party APIs
+- does not expose a public HTTP endpoint
+
+If a future version connects to external services such as Google Calendar or Gmail, authentication credentials would be stored securely using the `.env` configuration approach.
+
+---
+
+## Automated Tests
+
+Security tests are included in:
+
+```text
+test_security.py
+```
+
+Run the tests using:
 
 ```bash
-# Terminal 1: call add_task 5 times in under a minute → 5th succeeds, 6th is rejected
-# (e.g. via the Inspector's "Run" button, or asking Claude to add 6 tasks quickly)
-
-# response to the 6th call within the same 60s window:
-{ "success": false, "error": "Rate limit exceeded. Please wait before adding more tasks." }
+uv run pytest
 ```
 
-Then, instead of waiting out the 60-second window:
+The automated tests cover:
 
-```bash
-# Ctrl+C the running server, then start a fresh process
-uv run server.py
-# (or: fully restart Claude Desktop, which respawns the server subprocess)
+- Valid task titles
+- Invalid categories
+- Excessively long task titles
+- SQL injection strings being treated as text
+- Rate-limit enforcement
+
+A successful test run should produce output similar to:
+
+```text
+5 passed
 ```
 
-The next `add_task` call succeeds immediately — the limiter has no memory of the previous process's 5 calls. Because the MCP host restarts the server subprocess on its own (e.g. any time Claude Desktop itself restarts, or if the process crashes and the host relaunches it), this reset can happen without the caller doing anything deliberate at all. A more robust limiter would persist counts outside the process (e.g. in the SQLite database itself, or in a file/cache keyed by client identity) rather than in an in-memory `deque` scoped to one process's lifetime.
+---
 
-## Why authentication is not required
+## Manual MCP Testing
 
-This server uses MCP's **stdio transport**: Claude Desktop doesn't connect to it over a network — it launches `server.py` as a direct child process and talks to it over that one process's stdin/stdout pipes. There is no listening port, no URL, and no way for any other machine (or any other process on the same machine, for that matter) to open a connection to it the way they could with an HTTP server.
+The tools should also be tested manually in MCP Inspector.
 
-Given that, the trust boundary is the same as running any other local script: whoever can start the process already has exactly the access the process grants — running it *is* the authentication. Adding a username/password or token check on top wouldn't protect anything additional, because the only "client" that can ever talk to this server is the one the local user just launched.
+Recommended test sequence:
 
-This changes if the transport changes. If this server were instead exposed over MCP's HTTP-based transport — so that it could be reached over a network, potentially by multiple users or from a different machine — then authentication (and almost certainly per-caller rate limiting, see above) would become necessary, because at that point "whoever can reach the port" is a much bigger set of people than "whoever is running Claude Desktop on this laptop."
+### 1. Add Task
 
-## Project limitations
+Create a task:
 
-- **Rate limiting is easily bypassed.** As shown above, it's an in-memory, per-process, global counter — it resets on restart and doesn't distinguish between callers.
-- **No authentication or multi-user support.** Fine for local, single-user, stdio use (see above); not safe to expose over a network as-is.
-- **No update, complete, or delete tools.** Tasks can be added and listed, but never marked done or removed — the `completed` column exists in the schema but nothing ever sets it.
-- **Single global task list.** There's no per-user separation; anyone/anything talking to the server sees the same `tasks.db`.
-- **SQLite, single file, no migrations.** Fine for a class project; would need a real migration story and probably a different database for concurrent multi-user use.
-- **Sanitization is intentionally narrow.** `validate_title` only handles whitespace/length/control characters — it isn't, and isn't meant to be, an HTML/markdown escaper. If task titles were ever rendered in a web page, they'd need separate output-encoding, since this layer doesn't do that.
-- **`tasks.db` isn't gitignored.** `.gitignore` excludes `.venv`, `__pycache__`, and build artifacts, but not `tasks.db` — the runtime database (including whatever test/demo data ends up in it) can end up committed by accident. Worth adding `tasks.db` to `.gitignore`.
-- **Limited automated tests.** `test_security.py` covers `validate_title`, `validate_category`, and `check_rate_limit` well, but there's no test coverage for `database.py` or the tool functions in `server.py` themselves (e.g. no integration test that actually calls `add_task`/`list_tasks` end to end).
-- **`due_date` isn't range- or sanity-checked.** `"2020-01-01"` or `"2099-12-31"` are both accepted as long as they parse — there's no check that a due date is reasonable or in the future.
-- **The packaged `grad-task-mcp` CLI entry point is a stub.** `pyproject.toml` defines a console script (`grad-task-mcp = "grad_task_mcp:main"`) pointing at `src/grad_task_mcp/__init__.py`, but that `main()` just prints a placeholder greeting — it's unrelated to the actual server in `server.py`. Use `uv run server.py` (or `uv run mcp dev server.py`) to run the real thing, not the `grad-task-mcp` command.
+```text
+Title:
+MCP Inspector Test Task
 
-## Repository structure
+Category:
+academic
 
+Due Date:
+2026-09-25
 ```
-grad-task-mcp/
-├── server.py                  # MCP server: defines the mcp instance, add_task and
-│                               # list_tasks tools, and the plan_my_day prompt
-├── security.py                # Input validation (validate_title, validate_category)
-│                               # and the rate limiter (check_rate_limit)
-├── database.py                # SQLite connection helper + schema creation
-├── test_security.py           # pytest tests for security.py
-├── tasks.db                   # SQLite database file (created automatically on first run)
-├── pyproject.toml             # Project metadata, dependencies, uv/build config
-├── uv.lock                    # Locked dependency versions (generated by uv)
-├── requirements.txt           # Exported pinned dependencies (via `uv pip compile`)
-├── .python-version            # Pins the Python version (3.12) for uv
-├── .gitignore                 # Excludes .venv, __pycache__, build artifacts
-├── claude_desktop_config.json # Example/placeholder Claude Desktop MCP config
-├── README.md                  # This file
-└── src/
-    └── grad_task_mcp/
-        └── __init__.py        # Packaged CLI stub (see Limitations — not the server)
+
+### 2. List Tasks
+
+Run:
+
+```text
+list_tasks
 ```
+
+Confirm that the new task appears.
+
+### 3. Update Task
+
+Update the task title or completion status.
+
+Example:
+
+```text
+Task ID:
+1
+
+Title:
+Updated MCP Inspector Task
+```
+
+Then run `list_tasks()` again to confirm the change.
+
+### 4. Complete Task
+
+Set:
+
+```text
+completed = true
+```
+
+The task should no longer appear in the active task list.
+
+### 5. Delete Task
+
+Create a temporary task and delete it using its ID.
+
+Then run `list_tasks()` again and confirm that it has been removed.
+
+### 6. Test the Prompt
+
+Open the MCP Inspector prompt section.
+
+Run:
+
+```text
+plan_my_day
+```
+
+with a priority such as:
+
+```text
+balanced
+```
+
+Confirm that the server returns the reusable planning instructions.
+
+---
+
+## Claude Desktop Testing
+
+Each tool should also be tested through Claude Desktop.
+
+Recommended examples:
+
+### Add
+
+```text
+Add an academic task called "Claude Test Task" due September 26, 2026.
+```
+
+### List
+
+```text
+Show me all my academic tasks.
+```
+
+### Update
+
+```text
+Change "Claude Test Task" to "Updated Claude Test Task".
+```
+
+### Complete
+
+```text
+Mark "Updated Claude Test Task" as completed.
+```
+
+### Delete
+
+```text
+Add a task called "Delete Me Claude" in the other category.
+```
+
+Then:
+
+```text
+Delete "Delete Me Claude".
+```
+
+This confirms that Claude Desktop can discover and use the MCP server successfully.
+
+---
+
+## Design Decisions
+
+### Why Separate Add, List, Update, and Delete?
+
+Each tool represents a distinct user action.
+
+- `add_task()` creates data
+- `list_tasks()` reads data
+- `update_task()` changes data
+- `delete_task()` removes data
+
+These operations are intentionally separate because they have different behaviors and different safety implications.
+
+### Why Not Create Separate Update Tools?
+
+The server does not use separate tools such as:
+
+```text
+rename_task()
+complete_task()
+change_due_date()
+```
+
+Instead, these actions are handled through:
+
+```text
+update_task()
+```
+
+This avoids creating too many similar tools.
+
+It also makes the interface easier for an LLM to understand and reduces unnecessary duplication.
+
+---
+
+## Limitations
+
+The current implementation is intended for a single local user.
+
+Current limitations include:
+
+- Tasks are stored only on one machine
+- There is no synchronization across devices
+- SQLite is intended for local use rather than large multi-user applications
+- The rate limiter is stored in application memory
+- Restarting the server resets the rate limiter
+- There is no user account system
+- There are no recurring tasks
+- There are no reminder notifications
+- There is no calendar synchronization
+- The visual appearance of MCP input fields depends on the MCP client
+- A typed date field may not display as a calendar picker in every MCP client
+
+---
+
+## Future Improvements
+
+Future versions could include:
+
+- Google Calendar integration
+- Reminder notifications
+- Task priorities
+- Recurring tasks
+- Persistent rate limiting using Redis
+- User authentication
+- Cloud synchronization
+- Better filtering and sorting
+- Task search
+- Task history
+- Multiple users
+- Hosted MCP transport
+
+---
+
+## Code References
+
+MCP server initialization and tool/prompt patterns were adapted from the official MCP Python SDK documentation.
+
+MCP Documentation:
+
+https://modelcontextprotocol.io/
+
+MCP Python SDK:
+
+https://github.com/modelcontextprotocol/python-sdk
+
+MCP Example Servers:
+
+https://github.com/modelcontextprotocol/servers
+
+Where code is directly adapted from an external source, the corresponding source is referenced in a code comment.
+
+---
+
+## Technologies Used
+
+- Python
+- Model Context Protocol
+- MCP Python SDK
+- SQLite
+- Pydantic
+- python-dotenv
+- pathlib
+- pytest
+- uv
+- Claude Desktop
+- MCP Inspector
+
+---
+
+## Summary
+
+The Grad Student Task Manager demonstrates how an MCP server can expose structured tools and prompts to an AI client while maintaining basic software engineering and security practices.
+
+The project includes:
+
+- Four MCP tools
+- One MCP prompt
+- SQLite persistence
+- Input validation
+- Parameterized SQL
+- SQL injection protection
+- Rate limiting
+- Error handling
+- Safe local configuration
+- Automated testing
+- MCP Inspector testing
+- Claude Desktop integration
+
+The result is a small but complete example of using MCP to connect an AI assistant to a local productivity application.

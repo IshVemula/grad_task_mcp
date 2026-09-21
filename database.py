@@ -1,16 +1,24 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "tasks.db"
+
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "tasks.db"
 
 
 def get_connection():
-    """Create and return a connection to the SQLite database."""
+    """
+    Create and return a connection to the SQLite database.
+    """
+
     return sqlite3.connect(DB_PATH)
 
 
 def initialize_database():
-    """Create the tasks table if it does not already exist."""
+    """
+    Create the tasks table if it does not already exist.
+    """
+
     connection = get_connection()
 
     connection.execute(

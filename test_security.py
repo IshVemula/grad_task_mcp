@@ -1,15 +1,18 @@
 import pytest
 
 from security import (
-    validate_title,
-    validate_category,
     check_rate_limit,
     request_times,
+    validate_category,
+    validate_title,
 )
 
 
 def test_valid_title():
-    result = validate_title("Finish MCP assignment")
+    result = validate_title(
+        "Finish MCP assignment"
+    )
+
     assert result == "Finish MCP assignment"
 
 
@@ -26,9 +29,13 @@ def test_long_title():
 
 
 def test_sql_injection_string_is_treated_as_text():
-    malicious_input = "'); DROP TABLE tasks; --"
+    malicious_input = (
+        "'); DROP TABLE tasks; --"
+    )
 
-    result = validate_title(malicious_input)
+    result = validate_title(
+        malicious_input
+    )
 
     assert result == malicious_input
 
