@@ -1,5 +1,7 @@
 # Grad Student Task Manager MCP
 
+- Ishitha Reddy Vemula
+  
 ## Overview
 
 The **Grad Student Task Manager** is a Python-based Model Context Protocol (MCP) server built in the **Personal Productivity** domain.
