@@ -368,7 +368,9 @@ def dated_entries(ws: dict) -> list[dict]:
     for rec in iter_records(ws):
         if is_done(rec):
             continue
-        if rec.kind == "career.application" and rec.item.get("status") == "Offer":
+        # An application's single date is a deadline only while you are still to apply; after that
+        # it is just the day you applied, so it never shows as upcoming or overdue.
+        if rec.kind == "career.application" and rec.item.get("status") not in ("Interested", "Preparing"):
             continue
         due, time = _when(rec)
         if not due:
@@ -548,14 +550,14 @@ def add_life_admin_item(ws, kind, title, due_date=None, due_time=None, status=No
     return _result(f"Life Admin → {label}", item, dry_run)
 
 
-def add_career_item(ws, kind, title=None, company=None, role=None, due_date=None, applied_date=None, status=None,
+def add_career_item(ws, kind, title=None, company=None, role=None, due_date=None, status=None,
                     person=None, dry_run=False) -> dict:
     kind = to_choice(kind, ["application", "task", "networking"], "kind of career item")
     cr = ws["career"]
     if kind == "application":
         item = {
             "id": new_id(), "company": clean(company, "company"), "role": clean(role, "role"),
-            "deadline": to_date(due_date, "application deadline"), "applied": to_date(applied_date, "date applied"),
+            "deadline": to_date(due_date, "date"),
             "status": to_choice(status, APP_STATUS, "status", default="Interested"),
         }
         target, label = cr["applications"], "Applications"
@@ -639,7 +641,7 @@ EDITABLE: dict[str, dict[str, tuple[str, Any]]] = {
     "life_admin.appointment": {"title": ("title", "text"), "due_date": ("date", "date"), "due_time": ("time", "time"),
                                "done": ("done", "bool")},
     "career.application": {"company": ("company", "text"), "role": ("role", "text"), "due_date": ("deadline", "date"),
-                           "applied_date": ("applied", "date"), "status": ("status", APP_STATUS)},
+                           "status": ("status", APP_STATUS)},
     "career.task": {"text": ("text", "text"), "done": ("done", "bool")},
     "career.networking": {"text": ("text", "text"), "done": ("done", "bool"), "person": ("personId", "person")},
     "people.person": {"name": ("name", "text"), "organization": ("org", "optional"), "role": ("role", "optional"),

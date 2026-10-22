@@ -241,7 +241,8 @@ def add_life_admin_item(
 @mcp.tool(
     title="Add Career Item",
     description=(
-        "Add to Career. kind=application (company and role; optional deadline, date applied, status Interested/"
+        "Add to Career. kind=application (company and role; ONE optional date: the deadline while the status is "
+        "Interested or Preparing, or the day applied once it is Applied or later; status Interested/"
         "Preparing/Applied/Interview/Waiting/Offer/Rejected/Closed), task (a to-do), or networking (a reach-out, "
         "optionally linked to someone already in People)."
     ),
@@ -252,8 +253,7 @@ def add_career_item(
     title: Annotated[str | None, Field(max_length=200, description="Task or follow-up text (task, networking).")] = None,
     company: Annotated[str | None, Field(max_length=200, description="Applications only.")] = None,
     role: Annotated[str | None, Field(max_length=200, description="Applications only.")] = None,
-    due_date: Annotated[date | None, Field(description="Applications only: application deadline, YYYY-MM-DD.")] = None,
-    applied_date: Annotated[date | None, Field(description="Applications only: when it was submitted.")] = None,
+    due_date: Annotated[date | None, Field(description="Applications only: the single date, YYYY-MM-DD.")] = None,
     status: Annotated[
         Literal["Interested", "Preparing", "Applied", "Interview", "Waiting", "Offer", "Rejected", "Closed"] | None,
         Field(description="Applications only. Defaults to Interested."),
@@ -262,7 +262,7 @@ def add_career_item(
     dry_run: DryRun = False,
 ) -> dict:
     return _write(
-        lambda w: ws_ops.add_career_item(w, kind, title, company, role, due_date, applied_date, status, person, dry_run),
+        lambda w: ws_ops.add_career_item(w, kind, title, company, role, due_date, status, person, dry_run),
         dry_run,
     )
 
@@ -327,7 +327,7 @@ def add_personal_item(
     description=(
         "Change fields on an existing item, found by id (use find_items or list_items first). Field names: "
         "title/text/name, due_date, due_time, status, type, notes, link, amount, recurring, group, role, "
-        "company, applied_date, organization, how_i_know_them, last_contacted, next_followup, person, done, "
+        "company, organization, how_i_know_them, last_contacted, next_followup, person, done, "
         "paid. Use an empty string to clear a date or text field. Only fields that exist on that kind of "
         "item are accepted."
     ),

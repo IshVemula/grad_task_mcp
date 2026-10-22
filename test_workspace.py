@@ -259,5 +259,21 @@ def test_waiting_is_a_status_for_applications_right_after_interview(ws):
     w.update_item(ws, "a1", {"status": "Interview"})
     w.update_item(ws, "a1", {"status": "Waiting"})
     assert ws["career"]["applications"][0]["status"] == "Waiting"
-    # a pending application is still open: its deadline keeps showing in Upcoming
-    assert any(e["title"] == "Databricks" for e in w.list_upcoming(ws, TODAY, 14)["upcoming"])
+    # once you are waiting to hear back, the date is no longer a deadline: nothing is upcoming or overdue
+    assert not any(e["title"] == "Databricks" for e in w.list_upcoming(ws, TODAY, 14)["upcoming"])
+
+
+def test_an_application_has_one_date_that_only_counts_as_a_deadline_until_you_apply(ws):
+    app = ws["career"]["applications"][0]
+    assert "applied" not in w.add_career_item(ws, "application", company="Meta", role="PM", due_date=date(2026, 11, 1))["item"]
+    titles = lambda: [e["title"] for e in w.list_upcoming(ws, TODAY, 14)["upcoming"]]
+    assert "Databricks" in titles()                          # Interested: the date is a deadline
+    w.update_item(ws, "a1", {"status": "Preparing"})
+    assert "Databricks" in titles()                          # Preparing: still a deadline
+    for status in ("Applied", "Interview", "Waiting", "Offer", "Rejected"):
+        w.update_item(ws, "a1", {"status": status})
+        assert "Databricks" not in titles(), status          # after applying: just the day you applied
+    app["deadline"] = "2026-10-01"                           # a past date on an applied application is not overdue
+    assert "Databricks" not in [e["title"] for e in w.list_upcoming(ws, TODAY, 14)["overdue"]]
+    with pytest.raises(ValueError):
+        w.update_item(ws, "a1", {"applied_date": "2026-10-19"})   # the second date no longer exists
