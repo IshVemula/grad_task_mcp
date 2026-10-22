@@ -199,7 +199,8 @@ def test_overview_lists_real_names_and_what_is_unsupported(ws):
     o = w.overview(ws, TODAY)
     assert [s["name"] for s in o["academics"]["subjects"]][0] == "Decision Framing and Analysis"
     assert o["people"][0]["name"] == "Ricardo Puga"
-    assert any("class" in line.lower() for line in o["not_supported"])
+    assert any("other than weekly" in line for line in o["not_supported"])      # weekly classes are supported now
+    assert not any("class" in line.lower() and "weekly" not in line.lower() for line in o["not_supported"])
 
 
 # ---------------------------------------------------------------- changing
@@ -277,3 +278,105 @@ def test_an_application_has_one_date_that_only_counts_as_a_deadline_until_you_ap
     assert "Databricks" not in [e["title"] for e in w.list_upcoming(ws, TODAY, 14)["overdue"]]
     with pytest.raises(ValueError):
         w.update_item(ws, "a1", {"applied_date": "2026-10-19"})   # the second date no longer exists
+
+
+# ---------------------------------------------------------------- repeating class times
+
+THURSDAY = date(2026, 10, 22)
+assert THURSDAY.weekday() == 3
+
+
+def test_a_class_time_is_stored_the_way_the_website_stores_it(ws):
+    result = w.add_class_time(ws, "applications of ai", "Lecture", ["Tue", "Thu"], "8:40 AM", "9:55 AM", "Room 120")
+    c = ws["academics"]["subjects"][1]["schedule"][0]
+    assert set(c) == {"id", "title", "days", "start", "end", "location", "from", "until"}
+    assert c["days"] == [2, 4] and c["start"] == "08:40" and c["end"] == "09:55" and c["location"] == "Room 120"
+    assert result["where"] == "Academics → Applications of AI in Tech Teams → Class Schedule"
+    assert result["repeats"] == "every Tue, Thu, 08:40–09:55"
+
+
+def test_day_names_are_understood_in_several_forms(ws):
+    assert w.to_days("Tue, Thu") == [2, 4]
+    assert w.to_days(["Tuesday", "thu", 0]) == [0, 2, 4]
+    assert w.to_days("Mon/Wed/Fri") == [1, 3, 5]
+    with pytest.raises(ValueError):
+        w.to_days(["Funday"])
+    with pytest.raises(NeedsClarification) as ask:
+        w.to_days([])
+    assert ask.value.options[0] == "Mon"
+
+
+def test_a_class_time_asks_when_something_is_missing_and_saves_nothing(ws):
+    before = copy.deepcopy(ws)
+    with pytest.raises(NeedsClarification):
+        w.add_class_time(ws, "AI", "Lecture", None, "08:40")                    # which days?
+    with pytest.raises(NeedsClarification):
+        w.add_class_time(ws, "AI", "Lecture", ["Tue"], None)                    # what time?
+    with pytest.raises(NeedsClarification):
+        w.add_class_time(ws, "Macro", "Lecture", ["Tue"], "08:40")              # unknown subject
+    with pytest.raises(ValueError):
+        w.add_class_time(ws, "AI", "Lecture", ["Tue"], "09:55", "08:40")        # ends before it starts
+    with pytest.raises(ValueError):
+        w.add_class_time(ws, "AI", "Lecture", ["Tue"], "08:40", first_day=date(2026, 12, 1), last_day=date(2026, 9, 1))
+    assert ws == before
+
+
+def test_works_on_older_data_with_no_schedule_key(ws):
+    assert all("schedule" not in s for s in ws["academics"]["subjects"])
+    w.add_class_time(ws, "decision", "Lecture", ["Tue", "Thu"], "10:10", "11:25")
+    assert len(ws["academics"]["subjects"][0]["schedule"]) == 1
+
+
+def test_classes_show_up_on_the_days_they_meet(ws):
+    w.add_class_time(ws, "AI", "Lecture", ["Tue", "Thu"], "08:40", "09:55", "Room 120")
+    w.add_class_time(ws, "decision", "Lecture", ["Tue", "Thu"], "10:10", "11:25")
+    today = w.list_today(ws, THURSDAY)["due_today_or_overdue"]["academics"]
+    classes = [e for e in today if e.get("repeating")]
+    assert [(e["title"], e["due_time"], e["end_time"]) for e in classes] == [
+        ("Applications of AI in Tech Teams — Lecture", "08:40", "09:55"),
+        ("Decision Framing and Analysis — Lecture", "10:10", "11:25"),
+    ]
+    up = w.list_upcoming(ws, THURSDAY, 14)["upcoming"]
+    days = sorted({e["due_date"] for e in up if e.get("repeating")})
+    assert days == ["2026-10-22", "2026-10-27", "2026-10-29", "2026-11-03", "2026-11-05"]
+
+
+def test_first_and_last_day_bound_a_class(ws):
+    w.add_class_time(ws, "AI", "Lecture", ["Tue", "Thu"], "08:40", first_day=date(2026, 10, 27), last_day=date(2026, 10, 29))
+    days = [e["due_date"] for e in w.list_upcoming(ws, THURSDAY, 14)["upcoming"] if e.get("repeating")]
+    assert days == ["2026-10-27", "2026-10-29"]
+    assert w.list_today(ws, THURSDAY)["due_today_or_overdue"].get("academics", [{}])[0].get("repeating") is None
+
+
+def test_changing_and_removing_a_class_time(ws):
+    w.add_class_time(ws, "AI", "Lecture", ["Tue", "Thu"], "08:40", "09:55")
+    cid = ws["academics"]["subjects"][1]["schedule"][0]["id"]
+    w.update_item(ws, cid, {"days": ["Mon", "Wed"], "start_time": "09:00", "end_time": "10:15", "location": "Room 2"})
+    c = ws["academics"]["subjects"][1]["schedule"][0]
+    assert c["days"] == [1, 3] and c["start"] == "09:00" and c["end"] == "10:15" and c["location"] == "Room 2"
+    with pytest.raises(ValueError):
+        w.update_item(ws, cid, {"end_time": "08:00"})              # would end before it starts
+    with pytest.raises(ValueError):
+        w.update_item(ws, cid, {"due_date": "2026-10-30"})         # a class time has no due date
+    with pytest.raises(ValueError):
+        w.complete_item(ws, cid)                                   # and can't be "done"
+    assert w.find_items(ws, "lecture")["items"][0]["kind"] == "academics.class"
+    w.delete_item(ws, cid)
+    assert ws["academics"]["subjects"][1]["schedule"] == []
+
+
+def test_listing_and_overview_include_class_times(ws):
+    w.add_class_time(ws, "AI", "Lecture", ["Tue", "Thu"], "08:40", "09:55")
+    listed = w.list_items(ws, "academics", "AI")["items"]
+    cls = next(i for i in listed if i["kind"] == "academics.class")
+    assert cls["repeats_every"] == "Tue, Thu" and cls["start_time"] == "08:40"
+    o = w.overview(ws, THURSDAY)
+    assert o["academics"]["subjects"][1]["class_times"] == 1
+    assert any("other than weekly" in line for line in o["not_supported"])
+
+
+def test_deleting_a_subject_mentions_its_class_times(ws):
+    w.add_class_time(ws, "AI", "Lecture", ["Tue"], "08:40")
+    with pytest.raises(NeedsClarification) as ask:
+        w.delete_item(ws, "s-ai")
+    assert "class times" in ask.value.question

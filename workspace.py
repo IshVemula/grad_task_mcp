@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import uuid
 from collections import namedtuple
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterator
 
 AREAS = ("academics", "life_admin", "career", "people", "personal")
@@ -140,6 +140,54 @@ def to_bool(value: Any, field: str) -> bool:
     raise ValueError(f"{field} must be true or false.")
 
 
+WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]          # 0 = Sunday, as the website stores them
+_FULL_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+_DAY_NUMBERS = {**{n.lower(): i for i, n in enumerate(WEEKDAYS)}, **{n.lower(): i for i, n in enumerate(_FULL_DAYS)}}
+MONDAY_FIRST = WEEKDAYS[1:] + WEEKDAYS[:1]
+
+
+def to_days(value: Any) -> list[int]:
+    if value is None or value == [] or value == "":
+        raise NeedsClarification("Which days of the week does it meet?", MONDAY_FIRST)
+    if isinstance(value, str):
+        value = [part for part in re.split(r"[,\s/&]+", value) if part]
+    found: set[int] = set()
+    for item in value:
+        if isinstance(item, int) and not isinstance(item, bool) and 0 <= item <= 6:
+            found.add(item)
+        elif str(item).strip().lower() in _DAY_NUMBERS:
+            found.add(_DAY_NUMBERS[str(item).strip().lower()])
+        else:
+            raise ValueError(f"'{item}' isn't a day of the week. Use Mon, Tue, Wed, Thu, Fri, Sat or Sun.")
+    return sorted(found)
+
+
+def days_label(days: list[int]) -> str:
+    return ", ".join(WEEKDAYS[d] for d in sorted(days, key=lambda d: (d + 6) % 7))
+
+
+def check_class(item: dict) -> None:
+    if not item.get("start"):
+        raise NeedsClarification("What time does it start?")
+    if item.get("end") and item["end"] <= item["start"]:
+        raise ValueError("The end time must be after the start time.")
+    if item.get("from") and item.get("until") and item["until"] < item["from"]:
+        raise ValueError("The last day is before the first day.")
+
+
+def meets_on(c: dict, day: date) -> bool:
+    iso = day.isoformat()
+    return ((day.weekday() + 1) % 7 in c.get("days", [])
+            and (not c.get("from") or iso >= c["from"]) and (not c.get("until") or iso <= c["until"]))
+
+
+def next_session(c: dict, today: date) -> str:
+    for offset in range(400):
+        if meets_on(c, today + timedelta(days=offset)):
+            return (today + timedelta(days=offset)).isoformat()
+    return ""
+
+
 # --------------------------------------------------------------------------- lookups
 
 
@@ -212,6 +260,8 @@ def iter_records(ws: dict) -> Iterator[Rec]:
             yield Rec("academics.todo", "academics", f"Academics → {s['name']} → Things To Do", s["id"], s["todos"], t)
         for m in s["milestones"]:
             yield Rec("academics.milestone", "academics", f"Academics → {s['name']} → Major Milestones", s["id"], s["milestones"], m)
+        for c in s.setdefault("schedule", []):
+            yield Rec("academics.class", "academics", f"Academics → {s['name']} → Class Schedule", s["id"], s["schedule"], c)
     la = ws["lifeadmin"]
     for key, kind, label in (
         ("documents", "life_admin.document", "Documents"),
@@ -304,6 +354,16 @@ def summarize(rec: Rec) -> dict:
             out["last_contacted"] = rec.item["last"]
     elif rec.kind == "academics.subject":
         out["professor"] = rec.item.get("professor", "")
+        out["class_times"] = len(rec.item.get("schedule", []))
+    elif rec.kind == "academics.class":
+        c = rec.item
+        out["repeats_every"], out["start_time"], out["end_time"] = days_label(c["days"]), c.get("start", ""), c.get("end", "")
+        out["location"] = c.get("location", "")
+        if c.get("from"):
+            out["first_day"] = c["from"]
+        if c.get("until"):
+            out["last_day"] = c["until"]
+        out["next_session"] = next_session(c, today_local())
     out["done"] = is_done(rec)
     return out
 
@@ -332,10 +392,11 @@ def overview(ws: dict, today: date) -> dict:
                     "open_deadlines": sum(1 for d in s["deadlines"] if d.get("status") != "Done"),
                     "open_todos": sum(1 for t in s["todos"] if not t.get("done")),
                     "milestones": len(s["milestones"]),
+                    "class_times": len(s.get("schedule", [])),
                 }
                 for s in subjects(ws)
             ],
-            "can_add": "deadline, todo or milestone to a subject; or a new subject",
+            "can_add": "deadline, todo, milestone or a repeating weekly class time on a subject; or a new subject",
         },
         "life_admin": {
             "lists": {
@@ -354,8 +415,8 @@ def overview(ws: dict, today: date) -> dict:
             "recurring": RECUR, "grocery_group": GROCERY_GROUPS,
         },
         "not_supported": [
-            "Recurring class sessions or a class timetable",
-            "Calendar events or meetings (use an Appointment, a person follow-up, or a subject to-do only if the user says so)",
+            "Repeating patterns other than weekly (every other week, monthly): ask the user how they want it handled",
+            "One-off calendar events or meetings (use an Appointment, a person follow-up, or a subject to-do only if the user says so)",
             "Personal tasks with dates (use Recreation or Social for dated personal items)",
             "Home tasks with due dates (use Appointments & Errands for dated chores)",
         ],
@@ -381,12 +442,31 @@ def dated_entries(ws: dict) -> list[dict]:
     return out
 
 
+def class_sessions(ws: dict, start: date, days: int) -> list[dict]:
+    """Each repeating class time, worked out for the days from `start` (never stored one by one)."""
+    out = []
+    for offset in range(days + 1):
+        day = start + timedelta(days=offset)
+        for s in subjects(ws):
+            for c in s.get("schedule", []):
+                if meets_on(c, day):
+                    out.append({
+                        "id": c["id"], "kind": "academics.class_session", "area": "academics",
+                        "where": f"Academics → {s['name']} → Class Schedule",
+                        "title": f"{s['name']} — {c.get('title') or 'Class'}", "due_date": day.isoformat(),
+                        "due_time": c.get("start", ""), "end_time": c.get("end", ""), "location": c.get("location", ""),
+                        "repeating": True,
+                    })
+    return out
+
+
 def _days_until(iso: str, today: date) -> int:
     return (date.fromisoformat(iso) - today).days
 
 
 def list_today(ws: dict, today: date) -> dict:
     groups: dict[str, list[dict]] = {a: [] for a in AREAS}
+    groups["academics"].extend(class_sessions(ws, today, 0))
     for entry in dated_entries(ws):
         if _days_until(entry["due_date"], today) <= 0:
             entry["overdue"] = _days_until(entry["due_date"], today) < 0
@@ -397,7 +477,7 @@ def list_today(ws: dict, today: date) -> dict:
 
 
 def list_upcoming(ws: dict, today: date, days: int = 14) -> dict:
-    entries = [e for e in dated_entries(ws)]
+    entries = dated_entries(ws) + class_sessions(ws, today, min(days, 21))
     for e in entries:
         e["in_days"] = _days_until(e["due_date"], today)
     entries.sort(key=lambda e: (e["due_date"], e.get("due_time", "")))
@@ -406,6 +486,7 @@ def list_upcoming(ws: dict, today: date, days: int = 14) -> dict:
         "overdue": [e for e in entries if e["in_days"] < 0],
         "upcoming": [e for e in entries if 0 <= e["in_days"] <= days],
         "days": days,
+        "note": "Class sessions are listed for at most the next 21 days.",
     }
 
 
@@ -469,7 +550,7 @@ def add_subject(ws: dict, name: str | None, professor: str | None = None, dry_ru
     item = {
         "id": new_id(), "name": name, "professor": clean(professor, "professor", required=False),
         "color": SUBJECT_COLORS[len(subjects(ws)) % len(SUBJECT_COLORS)],
-        "deadlines": [], "todos": [], "milestones": [],
+        "deadlines": [], "todos": [], "milestones": [], "schedule": [],
     }
     if not dry_run:
         subjects(ws).append(item)
@@ -505,6 +586,25 @@ def add_academic_item(ws, subject, kind, title, deadline_type=None, due_date=Non
     if not dry_run:
         target.append(item)
     return _result(f"Academics → {s['name']} → {label}", item, dry_run)
+
+
+def add_class_time(ws, subject, title=None, days=None, start_time=None, end_time=None, location=None,
+                   first_day=None, last_day=None, dry_run=False) -> dict:
+    """A class (or lab, or weekly meeting) that repeats every week on the same days and times."""
+    s = find_subject(ws, subject)
+    item = {
+        "id": new_id(), "title": clean(title or "Class", "name"), "days": to_days(days),
+        "start": to_time(start_time, "start time"), "end": to_time(end_time, "end time"),
+        "location": clean(location, "location", required=False),
+        "from": to_date(first_day, "first day"), "until": to_date(last_day, "last day"),
+    }
+    check_class(item)
+    if not dry_run:
+        s.setdefault("schedule", []).append(item)
+    result = _result(f"Academics → {s['name']} → Class Schedule", item, dry_run)
+    result["repeats"] = f"every {days_label(item['days'])}, {item['start']}" + (f"–{item['end']}" if item["end"] else "")
+    result["note"] = "It now shows on Today and Upcoming on the days it meets."
+    return result
 
 
 def add_life_admin_item(ws, kind, title, due_date=None, due_time=None, status=None, link=None, notes=None,
@@ -628,6 +728,9 @@ def add_personal_item(ws, kind, text, due_date=None, due_time=None, dry_run=Fals
 # tool field name -> (stored key, how to validate)
 EDITABLE: dict[str, dict[str, tuple[str, Any]]] = {
     "academics.subject": {"name": ("name", "text"), "professor": ("professor", "optional")},
+    "academics.class": {"title": ("title", "text"), "days": ("days", "days"), "start_time": ("start", "time"),
+                        "end_time": ("end", "time"), "location": ("location", "optional"),
+                        "first_day": ("from", "date"), "last_day": ("until", "date")},
     "academics.deadline": {"title": ("title", "text"), "type": ("type", DEADLINE_TYPES), "status": ("status", DEADLINE_STATUS),
                            "due_date": ("date", "date"), "due_time": ("time", "time")},
     "academics.todo": {"text": ("text", "text"), "done": ("done", "bool")},
@@ -685,9 +788,13 @@ def update_item(ws: dict, item_id: str, changes: dict, dry_run: bool = False) ->
             new_values[key] = to_amount(value)
         elif how == "person":
             new_values[key] = find_person(ws, value)["id"] if value else ""
+        elif how == "days":
+            new_values[key] = to_days(value)
         else:
             new_values[key] = to_choice(value, how, name)
     after = {**rec.item, **new_values}
+    if rec.kind == "academics.class":
+        check_class(after)
     if not dry_run:
         rec.item.update(new_values)
     return {
@@ -705,7 +812,7 @@ def complete_item(ws: dict, item_id: str, done: bool = True, dry_run: bool = Fal
         change = {"paid": done}
     elif k == "life_admin.document":
         change = {"status": "Complete" if done else "Not Started"}
-    elif k in ("academics.subject", "people.person", "career.application"):
+    elif k in ("academics.subject", "people.person", "career.application", "academics.class"):
         raise ValueError(f"A {k.split('.')[1]} can't be marked done. Use update_item to change its fields instead.")
     else:
         change = {"done": done}
@@ -721,8 +828,8 @@ def delete_item(ws: dict, item_id: str, confirm: bool = False, dry_run: bool = F
     k, i = rec.kind, rec.item
     extra = ""
     if k == "academics.subject":
-        n = len(i["deadlines"]) + len(i["todos"]) + len(i["milestones"])
-        extra = f" and its {n} deadlines, to-dos and milestones"
+        n = len(i["deadlines"]) + len(i["todos"]) + len(i["milestones"]) + len(i.get("schedule", []))
+        extra = f" and its {n} deadlines, to-dos, milestones and class times"
     elif k == "people.person":
         extra = f" and its {len(i['tasks'])} linked tasks"
     if extra and not confirm and not dry_run:

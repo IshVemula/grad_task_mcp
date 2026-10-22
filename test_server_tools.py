@@ -140,3 +140,20 @@ def test_waiting_status_works_through_the_real_tools(stack):
     app_id = stack.data["career"]["applications"][0]["id"]
     assert call("update_item", item_id=app_id, changes={"status": "Interview"})["success"]
     assert call("update_item", item_id=app_id, changes={"status": "Waiting"})["success"]
+
+
+def test_class_times_through_the_real_tools(stack):
+    out = call("add_class_time", subject="decision", title="Lecture", days=["Tue", "Thu"], start_time="10:10 AM",
+               end_time="11:25 AM", location="Room 204")
+    assert out["success"] and out["where"].endswith("→ Class Schedule") and out["repeats"] == "every Tue, Thu, 10:10–11:25"
+    saved = stack.data["academics"]["subjects"][0]["schedule"][0]
+    assert saved["days"] == [2, 4] and saved["start"] == "10:10" and stack.rev == 2
+    # changing it uses a list of days
+    assert call("update_item", item_id=saved["id"], changes={"days": ["Mon", "Wed"]})["success"]
+    assert stack.data["academics"]["subjects"][0]["schedule"][0]["days"] == [1, 3]
+    # an unknown subject asks instead of guessing
+    ask = call("add_class_time", subject="Macro", days=["Tue"], start_time="09:00")
+    assert ask["needs_clarification"] and stack.patches == 2
+    # and a preview changes nothing
+    call("add_class_time", subject="AI", days=["Fri"], start_time="13:00", dry_run=True)
+    assert len(stack.data["academics"]["subjects"][1].get("schedule", [])) == 0 and stack.patches == 2

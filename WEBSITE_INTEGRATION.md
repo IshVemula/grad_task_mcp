@@ -29,7 +29,8 @@ Examples that make Claude ask first:
 - A subject, person, or list that doesn't exist yet ("Which subject? Or should I create it?")
 - A deadline with no date, a bill with no amount
 - A date on something that can't have one (a to-do, a home chore, a personal task)
-- Things the website has no place for: recurring class sessions, calendar events, meetings
+- Things the website has no place for: one-off calendar events, meetings that aren't weekly, or anything that
+  repeats less often than weekly. (Weekly classes, labs and meetings *do* have a place: a subject's Class Schedule.)
 
 Add `dry_run` to any add/change tool to preview exactly where something would land without saving.
 
@@ -40,6 +41,7 @@ Add `dry_run` to any add/change tool to preview exactly where something would la
 | `get_workspace_overview` | `add_subject` | `update_item` |
 | `list_today` | `add_academic_item` (deadline / to-do / milestone) | `complete_item` |
 | `list_upcoming` | `add_life_admin_item` (document / home / grocery / bill / appointment) | `delete_item` |
+| | `add_class_time` (repeats weekly: days, start/end, location) | |
 | `list_items` | `add_career_item` (application / task / networking) | |
 | `find_items` | `add_person`, `add_person_task`, `add_personal_item` | |
 

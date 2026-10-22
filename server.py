@@ -18,7 +18,8 @@ These tools read and change the user's Marginalia website: their personal planne
 It has five areas, and every item lives in one specific list:
 
 - Academics: subjects (grouped by semester). Each subject has Upcoming Deadlines (dated: assignment, exam,
-  project, presentation, reading, quiz), Things To Do (undated), and Major Milestones (dated).
+  project, presentation, reading, quiz), Class Schedule (classes, labs or meetings that repeat weekly on set
+  days and times), Things To Do (undated), and Major Milestones (dated).
 - Life Admin: Documents, Home tasks, Groceries, Bills & Utilities, Appointments & Errands.
 - Career: Applications, Career Tasks, Networking follow-ups.
 - People: a lightweight contact list; each person has linked tasks and follow-up dates.
@@ -27,9 +28,10 @@ It has five areas, and every item lives in one specific list:
 RULES FOR PLACING THINGS
 1. The user decides where things go. Use the destination they named. Never guess an area, subject, person,
    or list. If they did not say, or you are not sure, ask them BEFORE calling any add tool.
-2. If something does not fit any list above (for example recurring class sessions, calendar events, or
-   meetings), do not force it into the closest list. Tell the user it has no natural home on the site and
-   ask where they want it.
+2. If something does not fit any list above (for example one-off calendar events, meetings that aren't
+   weekly, or anything that repeats less often than weekly), do not force it into the closest list. Tell the
+   user it has no natural home on the site and ask where they want it. Weekly classes, labs and meetings
+   belong in a subject's Class Schedule: use add_class_time, not a deadline.
 3. If a tool returns needs_clarification, nothing was saved. Ask the user its question, wait for the
    answer, and only then try again.
 4. Call get_workspace_overview first if you need the real subject and people names. Use dry_run=true to
@@ -206,6 +208,34 @@ def add_academic_item(
 
 
 @mcp.tool(
+    title="Add Class Time",
+    description=(
+        "Add a class, lab, or meeting that repeats WEEKLY to ONE existing subject's Class Schedule: the days it "
+        "meets and a start time (end time and location optional; optional first and last day to bound it). It "
+        "then shows on Today and Upcoming on the days it meets, so do not also add each session as a deadline. "
+        "The user must have said which subject and when it meets; if not, this asks."
+    ),
+    annotations=ADDS,
+)
+def add_class_time(
+    subject: Subject,
+    days: Annotated[list[Literal["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]],
+                    Field(min_length=1, description="Days of the week it meets, e.g. ['Tue', 'Thu'].")],
+    start_time: Annotated[str, Field(description="Start time, like 08:40 or 8:40 AM.")],
+    end_time: Annotated[str | None, Field(description="End time, like 09:55 or 9:55 AM.")] = None,
+    title: Annotated[str | None, Field(max_length=200, description="e.g. Lecture, Lab, Capstone meeting. Defaults to Class.")] = None,
+    location: Annotated[str | None, Field(max_length=200, description="e.g. Room 120.")] = None,
+    first_day: Annotated[date | None, Field(description="Optional: first date it meets, YYYY-MM-DD.")] = None,
+    last_day: Annotated[date | None, Field(description="Optional: last date it meets, YYYY-MM-DD.")] = None,
+    dry_run: DryRun = False,
+) -> dict:
+    return _write(
+        lambda w: ws_ops.add_class_time(w, subject, title, days, start_time, end_time, location, first_day, last_day, dry_run),
+        dry_run,
+    )
+
+
+@mcp.tool(
     title="Add Life Admin Item",
     description=(
         "Add to Life Admin. kind=document (deadline, status, link, notes), home (a chore; no date; may recur), "
@@ -328,14 +358,14 @@ def add_personal_item(
         "Change fields on an existing item, found by id (use find_items or list_items first). Field names: "
         "title/text/name, due_date, due_time, status, type, notes, link, amount, recurring, group, role, "
         "company, organization, how_i_know_them, last_contacted, next_followup, person, done, "
-        "paid. Use an empty string to clear a date or text field. Only fields that exist on that kind of "
+        "paid; for class times: days (e.g. [\"Tue\", \"Thu\"]), start_time, end_time, location, first_day, last_day. Use an empty string to clear a date or text field. Only fields that exist on that kind of "
         "item are accepted."
     ),
     annotations=EDITS,
 )
 def update_item(
     item_id: ItemId,
-    changes: Annotated[dict[str, str | int | float | bool | None], Field(description="Field names and their new values.")],
+    changes: Annotated[dict[str, str | int | float | bool | list[str] | None], Field(description="Field names and their new values.")],
     dry_run: DryRun = False,
 ) -> dict:
     return _write(lambda w: ws_ops.update_item(w, item_id, changes, dry_run), dry_run)
