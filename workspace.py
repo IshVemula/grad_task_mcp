@@ -466,18 +466,21 @@ def _days_until(iso: str, today: date) -> int:
 
 def list_today(ws: dict, today: date) -> dict:
     groups: dict[str, list[dict]] = {a: [] for a in AREAS}
-    groups["academics"].extend(class_sessions(ws, today, 0))
     for entry in dated_entries(ws):
         if _days_until(entry["due_date"], today) <= 0:
             entry["overdue"] = _days_until(entry["due_date"], today) < 0
             groups[entry["area"]].append(entry)
     for items in groups.values():
         items.sort(key=lambda e: (e["due_date"], e.get("due_time", "")))
-    return {"today": today.isoformat(), "due_today_or_overdue": {a: v for a, v in groups.items() if v}}
+    return {
+        "today": today.isoformat(),
+        "classes_today": sorted(class_sessions(ws, today, 0), key=lambda e: e["due_time"]),
+        "due_today_or_overdue": {a: v for a, v in groups.items() if v},
+    }
 
 
 def list_upcoming(ws: dict, today: date, days: int = 14) -> dict:
-    entries = dated_entries(ws) + class_sessions(ws, today, min(days, 21))
+    entries = dated_entries(ws)
     for e in entries:
         e["in_days"] = _days_until(e["due_date"], today)
     entries.sort(key=lambda e: (e["due_date"], e.get("due_time", "")))
@@ -486,7 +489,8 @@ def list_upcoming(ws: dict, today: date, days: int = 14) -> dict:
         "overdue": [e for e in entries if e["in_days"] < 0],
         "upcoming": [e for e in entries if 0 <= e["in_days"] <= days],
         "days": days,
-        "note": "Class sessions are listed for at most the next 21 days.",
+        "classes": class_sessions(ws, today, min(days, 21)),
+        "classes_note": "Repeating classes are kept apart from deadlines, and listed for at most the next 21 days.",
     }
 
 

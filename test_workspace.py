@@ -327,25 +327,25 @@ def test_works_on_older_data_with_no_schedule_key(ws):
     assert len(ws["academics"]["subjects"][0]["schedule"]) == 1
 
 
-def test_classes_show_up_on_the_days_they_meet(ws):
+def test_classes_are_listed_apart_from_deadlines(ws):
     w.add_class_time(ws, "AI", "Lecture", ["Tue", "Thu"], "08:40", "09:55", "Room 120")
     w.add_class_time(ws, "decision", "Lecture", ["Tue", "Thu"], "10:10", "11:25")
-    today = w.list_today(ws, THURSDAY)["due_today_or_overdue"]["academics"]
-    classes = [e for e in today if e.get("repeating")]
-    assert [(e["title"], e["due_time"], e["end_time"]) for e in classes] == [
+    today = w.list_today(ws, THURSDAY)
+    assert [(e["title"], e["due_time"], e["end_time"]) for e in today["classes_today"]] == [
         ("Applications of AI in Tech Teams — Lecture", "08:40", "09:55"),
         ("Decision Framing and Analysis — Lecture", "10:10", "11:25"),
     ]
-    up = w.list_upcoming(ws, THURSDAY, 14)["upcoming"]
-    days = sorted({e["due_date"] for e in up if e.get("repeating")})
-    assert days == ["2026-10-22", "2026-10-27", "2026-10-29", "2026-11-03", "2026-11-05"]
+    assert not any(e.get("repeating") for items in today["due_today_or_overdue"].values() for e in items)
+    up = w.list_upcoming(ws, THURSDAY, 14)
+    assert sorted({e["due_date"] for e in up["classes"]}) == ["2026-10-22", "2026-10-27", "2026-10-29", "2026-11-03", "2026-11-05"]
+    assert not any(e.get("repeating") for e in up["upcoming"] + up["overdue"])
 
 
 def test_first_and_last_day_bound_a_class(ws):
     w.add_class_time(ws, "AI", "Lecture", ["Tue", "Thu"], "08:40", first_day=date(2026, 10, 27), last_day=date(2026, 10, 29))
-    days = [e["due_date"] for e in w.list_upcoming(ws, THURSDAY, 14)["upcoming"] if e.get("repeating")]
+    days = [e["due_date"] for e in w.list_upcoming(ws, THURSDAY, 14)["classes"]]
     assert days == ["2026-10-27", "2026-10-29"]
-    assert w.list_today(ws, THURSDAY)["due_today_or_overdue"].get("academics", [{}])[0].get("repeating") is None
+    assert w.list_today(ws, THURSDAY)["classes_today"] == []
 
 
 def test_changing_and_removing_a_class_time(ws):
