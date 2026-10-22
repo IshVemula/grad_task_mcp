@@ -304,7 +304,7 @@ def _title(item: dict) -> str:
 def _when(rec: Rec) -> tuple[str, str]:
     i = rec.item
     if rec.kind in ("academics.deadline", "academics.milestone", "life_admin.appointment",
-                    "personal.recreation", "personal.social"):
+                    "personal.recreation", "personal.social", "career.task", "career.networking"):
         return i.get("date", ""), i.get("time", "")
     if rec.kind == "life_admin.document" or rec.kind == "career.application":
         return i.get("deadline", ""), ""
@@ -655,10 +655,18 @@ def add_life_admin_item(ws, kind, title, due_date=None, due_time=None, status=No
 
 
 def add_career_item(ws, kind, title=None, company=None, role=None, due_date=None, status=None,
-                    person=None, dry_run=False) -> dict:
+                    person=None, dry_run=False, due_time=None) -> dict:
     kind = to_choice(kind, ["application", "task", "networking"], "kind of career item")
     cr = ws["career"]
+    if kind != "application":
+        if due_time and not due_date:
+            raise NeedsClarification("What date is that time on?")
     if kind == "application":
+        if due_time:
+            raise NeedsClarification(
+                "Applications have one date and no time. Should the time go on a networking event or a career task instead?",
+                ["Add it as a networking event", "Add it as a career task", "Add the application without the time"],
+            )
         item = {
             "id": new_id(), "company": clean(company, "company"), "role": clean(role, "role"),
             "deadline": to_date(due_date, "date"),
@@ -666,17 +674,13 @@ def add_career_item(ws, kind, title=None, company=None, role=None, due_date=None
         }
         target, label = cr["applications"], "Applications"
     elif kind == "task":
-        item = {"id": new_id(), "text": clean(title, "task"), "done": False}
+        item = {"id": new_id(), "text": clean(title, "task"), "done": False,
+                "date": to_date(due_date, "date"), "time": to_time(due_time)}
         target, label = cr["tasks"], "Career Tasks"
     else:
-        if due_date:
-            raise NeedsClarification(
-                "Networking follow-ups don't have dates. Put the date on the person's next follow-up instead, "
-                "or save it as something else?",
-                ["Set the person's next follow-up date", "Add without the date"],
-            )
-        item = {"id": new_id(), "text": clean(title, "follow-up"), "done": False,
-                "personId": find_person(ws, person)["id"] if person else ""}
+        item = {"id": new_id(), "text": clean(title, "follow-up or event"), "done": False,
+                "personId": find_person(ws, person)["id"] if person else "",
+                "date": to_date(due_date, "date"), "time": to_time(due_time)}
         target, label = cr["networking"], "Networking"
     if not dry_run:
         target.append(item)
@@ -749,8 +753,10 @@ EDITABLE: dict[str, dict[str, tuple[str, Any]]] = {
                                "done": ("done", "bool")},
     "career.application": {"company": ("company", "text"), "role": ("role", "text"), "due_date": ("deadline", "date"),
                            "status": ("status", APP_STATUS)},
-    "career.task": {"text": ("text", "text"), "done": ("done", "bool")},
-    "career.networking": {"text": ("text", "text"), "done": ("done", "bool"), "person": ("personId", "person")},
+    "career.task": {"text": ("text", "text"), "due_date": ("date", "date"), "due_time": ("time", "time"),
+                    "done": ("done", "bool")},
+    "career.networking": {"text": ("text", "text"), "due_date": ("date", "date"), "due_time": ("time", "time"),
+                          "done": ("done", "bool"), "person": ("personId", "person")},
     "people.person": {"name": ("name", "text"), "organization": ("org", "optional"), "role": ("role", "optional"),
                       "how_i_know_them": ("how", "optional"), "last_contacted": ("last", "date"),
                       "next_followup": ("next", "date"), "notes": ("notes", "notes")},

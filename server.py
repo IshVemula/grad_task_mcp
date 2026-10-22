@@ -21,7 +21,7 @@ It has five areas, and every item lives in one specific list:
   project, presentation, reading, quiz), Class Schedule (classes, labs or meetings that repeat weekly on set
   days and times), Things To Do (undated), and Major Milestones (dated).
 - Life Admin: Documents, Home tasks, Groceries, Bills & Utilities, Appointments & Errands.
-- Career: Applications, Career Tasks, Networking follow-ups.
+- Career: Applications (one date), Career Tasks and Networking follow-ups/events (both can have a date and time).
 - People: a lightweight contact list; each person has linked tasks and follow-up dates.
 - Personal: Recreation, Social, Personal Tasks.
 
@@ -271,10 +271,11 @@ def add_life_admin_item(
 @mcp.tool(
     title="Add Career Item",
     description=(
-        "Add to Career. kind=application (company and role; ONE optional date: the deadline while the status is "
-        "Interested or Preparing, or the day applied once it is Applied or later; status Interested/"
-        "Preparing/Applied/Interview/Waiting/Offer/Rejected/Closed), task (a to-do), or networking (a reach-out, "
-        "optionally linked to someone already in People)."
+        "Add to Career. kind=application (company and role; ONE optional date and no time: the deadline while the "
+        "status is Interested or Preparing, or the day applied once it is Applied or later; status Interested/"
+        "Preparing/Applied/Interview/Waiting/Offer/Rejected/Closed), task (a to-do; optional date and time), or "
+        "networking (a reach-out or event such as a coffee chat or career fair; optional date and time; optionally "
+        "linked to someone already in People)."
     ),
     annotations=ADDS,
 )
@@ -283,7 +284,8 @@ def add_career_item(
     title: Annotated[str | None, Field(max_length=200, description="Task or follow-up text (task, networking).")] = None,
     company: Annotated[str | None, Field(max_length=200, description="Applications only.")] = None,
     role: Annotated[str | None, Field(max_length=200, description="Applications only.")] = None,
-    due_date: Annotated[date | None, Field(description="Applications only: the single date, YYYY-MM-DD.")] = None,
+    due_date: Annotated[date | None, Field(description="Optional date, YYYY-MM-DD. For applications it is the single date.")] = None,
+    due_time: Annotated[str | None, Field(description="Optional time like 14:30 or 2:30 PM (tasks and networking only; needs a date).")] = None,
     status: Annotated[
         Literal["Interested", "Preparing", "Applied", "Interview", "Waiting", "Offer", "Rejected", "Closed"] | None,
         Field(description="Applications only. Defaults to Interested."),
@@ -292,7 +294,7 @@ def add_career_item(
     dry_run: DryRun = False,
 ) -> dict:
     return _write(
-        lambda w: ws_ops.add_career_item(w, kind, title, company, role, due_date, status, person, dry_run),
+        lambda w: ws_ops.add_career_item(w, kind, title, company, role, due_date, status, person, dry_run, due_time=due_time),
         dry_run,
     )
 

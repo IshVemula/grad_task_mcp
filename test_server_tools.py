@@ -157,3 +157,17 @@ def test_class_times_through_the_real_tools(stack):
     # and a preview changes nothing
     call("add_class_time", subject="AI", days=["Fri"], start_time="13:00", dry_run=True)
     assert len(stack.data["academics"]["subjects"][1].get("schedule", [])) == 0 and stack.patches == 2
+
+
+def test_dated_career_items_through_the_real_tools(stack):
+    out = call("add_career_item", kind="networking", title="Fall Career Fair", due_date="2026-10-30", due_time="10:00 AM")
+    assert out["success"] and out["where"] == "Career → Networking"
+    saved = stack.data["career"]["networking"][0]
+    assert saved["date"] == "2026-10-30" and saved["time"] == "10:00"
+    out = call("add_career_item", kind="task", title="Practice case interview", due_date="2026-10-24", due_time="16:00")
+    assert out["success"] and stack.data["career"]["tasks"][0]["time"] == "16:00"
+    assert call("update_item", item_id=saved["id"], changes={"due_date": "2026-11-02"})["success"]
+    assert stack.data["career"]["networking"][0]["date"] == "2026-11-02"
+    # an application has no time: Claude is told to ask rather than guess
+    ask = call("add_career_item", kind="application", company="Meta", role="PM", due_date="2026-11-05", due_time="09:00")
+    assert ask["needs_clarification"] and len(stack.data["career"]["applications"]) == 0

@@ -97,7 +97,6 @@ def test_things_that_do_not_fit_ask_first(ws):
         lambda: w.add_academic_item(ws, "AI", "todo", "Class", due_date=date(2026, 10, 22)),       # to-dos have no date
         lambda: w.add_life_admin_item(ws, "home", "Cook", due_date=date(2026, 10, 15)),              # chores have no date
         lambda: w.add_personal_item(ws, "task", "Call mom", due_date=date(2026, 10, 25)),            # personal tasks have no date
-        lambda: w.add_career_item(ws, "networking", "Email Mark", due_date=date(2026, 10, 25)),      # follow-ups have no date
     ]
     for case in cases:
         with pytest.raises(NeedsClarification) as ask:
@@ -380,3 +379,52 @@ def test_deleting_a_subject_mentions_its_class_times(ws):
     with pytest.raises(NeedsClarification) as ask:
         w.delete_item(ws, "s-ai")
     assert "class times" in ask.value.question
+
+
+# ---------------------------------------------------------------- dates and times on career tasks and networking
+
+
+def test_career_tasks_and_networking_take_a_date_and_time_in_the_websites_shape(ws):
+    task = w.add_career_item(ws, "task", "Practice case interview", due_date=date(2026, 10, 24), due_time="4:00 PM")["item"]
+    event = w.add_career_item(ws, "networking", "Fall Career Fair", due_date=date(2026, 10, 30), due_time="10:00", person="puga")["item"]
+    assert set(task) == {"id", "text", "done", "date", "time"} and task["date"] == "2026-10-24" and task["time"] == "16:00"
+    assert set(event) == {"id", "text", "done", "personId", "date", "time"} and event["personId"] == "p1" and event["time"] == "10:00"
+    undated = w.add_career_item(ws, "networking", "Email Mark")["item"]
+    assert undated["date"] == "" and undated["time"] == ""                       # still fine without a date
+
+
+def test_dated_career_items_show_up_in_today_and_upcoming_and_drop_off_when_done(ws):
+    w.add_career_item(ws, "task", "Send follow-up", due_date=TODAY)
+    w.add_career_item(ws, "networking", "Coffee chat", due_date=date(2026, 10, 25), due_time="09:30")
+    w.add_career_item(ws, "networking", "Missed thank-you", due_date=date(2026, 10, 20))
+    today = w.list_today(ws, TODAY)["due_today_or_overdue"]["career"]
+    assert {e["title"] for e in today} == {"Send follow-up", "Missed thank-you"}
+    assert next(e for e in today if e["title"] == "Missed thank-you")["overdue"] is True
+    up = w.list_upcoming(ws, TODAY, 14)["upcoming"]
+    assert any(e["title"] == "Coffee chat" and e["due_time"] == "09:30" for e in up)
+    done_id = next(e["id"] for e in today if e["title"] == "Send follow-up")
+    w.complete_item(ws, done_id)
+    assert {e["title"] for e in w.list_today(ws, TODAY)["due_today_or_overdue"]["career"]} == {"Missed thank-you"}
+
+
+def test_a_career_date_or_time_can_be_changed_and_cleared(ws):
+    cid = w.add_career_item(ws, "task", "Update resume")["item"]["id"]
+    w.update_item(ws, cid, {"due_date": "2026-10-27", "due_time": "13:15"})
+    item = ws["career"]["tasks"][-1]
+    assert item["date"] == "2026-10-27" and item["time"] == "13:15"
+    w.update_item(ws, cid, {"due_date": "", "due_time": ""})
+    assert item["date"] == "" and item["time"] == ""
+    nid = ws["career"]["networking"][0]["id"]
+    w.update_item(ws, nid, {"due_date": "2026-10-29", "due_time": "18:00"})
+    assert ws["career"]["networking"][0]["date"] == "2026-10-29"
+
+
+def test_career_dates_ask_when_something_does_not_fit(ws):
+    before = copy.deepcopy(ws)
+    with pytest.raises(NeedsClarification) as ask:
+        w.add_career_item(ws, "task", "Call recruiter", due_time="10:00")                       # a time with no date
+    assert "date" in ask.value.question.lower()
+    with pytest.raises(NeedsClarification) as ask:
+        w.add_career_item(ws, "application", company="Meta", role="PM", due_date=date(2026, 11, 1), due_time="10:00")
+    assert "Applications have one date and no time" in ask.value.question and ask.value.options
+    assert ws == before
