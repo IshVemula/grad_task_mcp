@@ -60,9 +60,9 @@ def validate_category(category: str) -> str:
     return category
 
 
-def check_rate_limit():
+def check_rate_limit(limit: int = RATE_LIMIT):
     """
-    Allow at most five state-changing operations every 60 seconds.
+    Allow at most `limit` state-changing operations every 60 seconds (five by default).
     """
 
     now = time.time()
@@ -70,7 +70,7 @@ def check_rate_limit():
     while request_times and now - request_times[0] > RATE_WINDOW_SECONDS:
         request_times.popleft()
 
-    if len(request_times) >= RATE_LIMIT:
+    if len(request_times) >= limit:
         raise ValueError(
             "Rate limit exceeded. Please wait before modifying more tasks."
         )

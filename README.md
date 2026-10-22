@@ -1,7 +1,12 @@
 # Grad Student Task Manager MCP
 
 - Ishitha Reddy Vemula
-  
+
+> **Update:** the server now reads and writes your Marginalia website instead of the local SQLite list,
+> with new tools that take an explicit destination and ask before saving anything unclear. See
+> [WEBSITE_INTEGRATION.md](WEBSITE_INTEGRATION.md). The sections below describe the original
+> SQLite version (its data is still in `tasks.db`, untouched).
+
 ## Overview
 
 The **Grad Student Task Manager** is a Python-based Model Context Protocol (MCP) server built in the **Personal Productivity** domain.
