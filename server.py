@@ -242,7 +242,7 @@ def add_life_admin_item(
     title="Add Career Item",
     description=(
         "Add to Career. kind=application (company and role; optional deadline, date applied, status Interested/"
-        "Preparing/Applied/Interview/Offer/Rejected/Closed), task (a to-do), or networking (a reach-out, "
+        "Preparing/Applied/Interview/Waiting/Offer/Rejected/Closed), task (a to-do), or networking (a reach-out, "
         "optionally linked to someone already in People)."
     ),
     annotations=ADDS,
@@ -255,7 +255,7 @@ def add_career_item(
     due_date: Annotated[date | None, Field(description="Applications only: application deadline, YYYY-MM-DD.")] = None,
     applied_date: Annotated[date | None, Field(description="Applications only: when it was submitted.")] = None,
     status: Annotated[
-        Literal["Interested", "Preparing", "Applied", "Interview", "Offer", "Rejected", "Closed"] | None,
+        Literal["Interested", "Preparing", "Applied", "Interview", "Waiting", "Offer", "Rejected", "Closed"] | None,
         Field(description="Applications only. Defaults to Interested."),
     ] = None,
     person: Annotated[str | None, Field(description="Networking only: an existing person to link.")] = None,

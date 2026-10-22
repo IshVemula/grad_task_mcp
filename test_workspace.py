@@ -250,3 +250,14 @@ def test_deleting_containers_needs_confirmation_and_unlinks(ws):
         w.delete_item(ws, "s-dfa")
     w.delete_item(ws, "b2")                       # a single bill needs no confirmation
     assert [b["id"] for b in ws["lifeadmin"]["bills"]] == ["b1"]
+
+
+def test_waiting_is_a_status_for_applications_right_after_interview(ws):
+    assert w.APP_STATUS.index("Waiting") == w.APP_STATUS.index("Interview") + 1
+    w.add_career_item(ws, "application", company="Google", role="APM Intern", status="waiting")
+    assert ws["career"]["applications"][-1]["status"] == "Waiting"
+    w.update_item(ws, "a1", {"status": "Interview"})
+    w.update_item(ws, "a1", {"status": "Waiting"})
+    assert ws["career"]["applications"][0]["status"] == "Waiting"
+    # a pending application is still open: its deadline keeps showing in Upcoming
+    assert any(e["title"] == "Databricks" for e in w.list_upcoming(ws, TODAY, 14)["upcoming"])

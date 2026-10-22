@@ -132,3 +132,11 @@ def test_the_write_limit_stops_a_runaway_loop(stack):
         assert call("add_personal_item", kind="task", text=f"t{i}")["success"]
     out = call("add_personal_item", kind="task", text="one too many")
     assert out["success"] is False and "Rate limit" in out["error"]
+
+
+def test_waiting_status_works_through_the_real_tools(stack):
+    out = call("add_career_item", kind="application", company="Databricks", role="APM", status="Waiting")
+    assert out["success"] and stack.data["career"]["applications"][0]["status"] == "Waiting"
+    app_id = stack.data["career"]["applications"][0]["id"]
+    assert call("update_item", item_id=app_id, changes={"status": "Interview"})["success"]
+    assert call("update_item", item_id=app_id, changes={"status": "Waiting"})["success"]
