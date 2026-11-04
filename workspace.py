@@ -303,7 +303,7 @@ def _title(item: dict) -> str:
 
 def _when(rec: Rec) -> tuple[str, str]:
     i = rec.item
-    if rec.kind in ("academics.deadline", "academics.milestone", "life_admin.appointment",
+    if rec.kind in ("academics.deadline", "academics.milestone", "academics.todo", "life_admin.appointment",
                     "personal.recreation", "personal.social", "career.task", "career.networking"):
         return i.get("date", ""), i.get("time", "")
     if rec.kind == "life_admin.document" or rec.kind == "career.application":
@@ -574,12 +574,10 @@ def add_academic_item(ws, subject, kind, title, deadline_type=None, due_date=Non
         }
         target, label = s["deadlines"], "Upcoming Deadlines"
     elif kind == "todo":
-        if due_date or due_time:
-            raise NeedsClarification(
-                "To-dos in a subject don't have dates. Should this be a deadline (with a due date) instead?",
-                ["Add as a deadline", "Add as a to-do without the date"],
-            )
-        item = {"id": new_id(), "text": clean(title, "to-do"), "done": False}
+        if due_time and not due_date:
+            raise NeedsClarification("What date is that time on?")
+        item = {"id": new_id(), "text": clean(title, "to-do"), "done": False,
+                "date": to_date(due_date, "date"), "time": to_time(due_time)}
         target, label = s["todos"], "Things To Do"
     else:
         item = {
@@ -741,7 +739,8 @@ EDITABLE: dict[str, dict[str, tuple[str, Any]]] = {
                         "first_day": ("from", "date"), "last_day": ("until", "date")},
     "academics.deadline": {"title": ("title", "text"), "type": ("type", DEADLINE_TYPES), "status": ("status", DEADLINE_STATUS),
                            "due_date": ("date", "date"), "due_time": ("time", "time")},
-    "academics.todo": {"text": ("text", "text"), "done": ("done", "bool")},
+    "academics.todo": {"text": ("text", "text"), "due_date": ("date", "date"), "due_time": ("time", "time"),
+                       "done": ("done", "bool")},
     "academics.milestone": {"title": ("title", "text"), "due_date": ("date", "date"), "done": ("done", "bool")},
     "life_admin.document": {"name": ("name", "text"), "due_date": ("deadline", "date"), "status": ("status", DOC_STATUS),
                             "link": ("link", "optional"), "notes": ("notes", "notes")},

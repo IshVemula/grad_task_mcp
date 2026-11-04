@@ -19,7 +19,7 @@ It has five areas, and every item lives in one specific list:
 
 - Academics: subjects (grouped by semester). Each subject has Upcoming Deadlines (dated: assignment, exam,
   project, presentation, reading, quiz), Class Schedule (classes, labs or meetings that repeat weekly on set
-  days and times), Things To Do (undated), and Major Milestones (dated).
+  days and times), Things To Do (optional date and time), and Major Milestones (dated).
 - Life Admin: Documents, Home tasks, Groceries, Bills & Utilities, Appointments & Errands.
 - Career: Applications (one date), Career Tasks and Networking follow-ups/events (both can have a date and time).
 - People: a lightweight contact list; each person has linked tasks and follow-up dates.
@@ -185,7 +185,7 @@ def add_subject(
     title="Add Academic Item",
     description=(
         "Add to ONE existing subject: a deadline (needs a due date; types: Assignment, Exam, Project, "
-        "Presentation, Reading, Quiz), a to-do (no date), or a milestone (needs a date). The user must have "
+        "Presentation, Reading, Quiz), a to-do (optional date and time; dated to-dos show on Today and Upcoming), or a milestone (needs a date). The user must have "
         "said which subject; if the subject doesn't exist yet this asks instead of creating it."
     ),
     annotations=ADDS,

@@ -94,7 +94,6 @@ def test_deadline_without_a_date_asks(ws):
 def test_things_that_do_not_fit_ask_first(ws):
     before = copy.deepcopy(ws)
     cases = [
-        lambda: w.add_academic_item(ws, "AI", "todo", "Class", due_date=date(2026, 10, 22)),       # to-dos have no date
         lambda: w.add_life_admin_item(ws, "home", "Cook", due_date=date(2026, 10, 15)),              # chores have no date
         lambda: w.add_personal_item(ws, "task", "Call mom", due_date=date(2026, 10, 25)),            # personal tasks have no date
     ]
@@ -428,3 +427,44 @@ def test_career_dates_ask_when_something_does_not_fit(ws):
         w.add_career_item(ws, "application", company="Meta", role="PM", due_date=date(2026, 11, 1), due_time="10:00")
     assert "Applications have one date and no time" in ask.value.question and ask.value.options
     assert ws == before
+
+
+# ---------------------------------------------------------------- subject to-dos can have a date and time
+
+def test_a_subject_todo_can_have_a_date_and_time_and_then_shows_as_upcoming(ws):
+    result = w.add_academic_item(ws, "AI", "todo", "Grade the group projects", due_date=date(2026, 10, 24), due_time="5:00 PM")
+    item = ws["academics"]["subjects"][1]["todos"][0]
+    assert set(item) == {"id", "text", "done", "date", "time"}
+    assert item["date"] == "2026-10-24" and item["time"] == "17:00" and item["done"] is False
+    assert result["where"].endswith("→ Things To Do")
+    up = w.list_upcoming(ws, TODAY, 14)["upcoming"]
+    assert any(e["title"] == "Grade the group projects" and e["due_date"] == "2026-10-24" and e["due_time"] == "17:00" for e in up)
+
+
+def test_a_subject_todo_with_no_date_still_works_and_is_not_listed_as_upcoming(ws):
+    w.add_academic_item(ws, "AI", "todo", "Read the syllabus")
+    todo = ws["academics"]["subjects"][1]["todos"][0]
+    assert todo["date"] == "" and todo["time"] == ""
+    assert not any(e["title"] == "Read the syllabus" for e in w.list_upcoming(ws, TODAY, 14)["upcoming"])
+    older = {"id": "old", "text": "Written before dates existed", "done": False}      # no date/time keys at all
+    ws["academics"]["subjects"][1]["todos"].append(older)
+    assert w.list_items(ws, "academics", "AI")["count"] >= 3                          # still lists, no crash
+
+
+def test_a_time_without_a_date_asks_and_a_finished_dated_todo_drops_out(ws):
+    with pytest.raises(NeedsClarification):
+        w.add_academic_item(ws, "AI", "todo", "Call the TA", due_time="09:00")
+    w.add_academic_item(ws, "AI", "todo", "Email the TA", due_date=date(2026, 10, 22))
+    assert any(e["title"] == "Email the TA" for e in w.list_today(ws, TODAY)["due_today_or_overdue"]["academics"])
+    todo_id = ws["academics"]["subjects"][1]["todos"][0]["id"]
+    w.complete_item(ws, todo_id)
+    assert "Email the TA" not in str(w.list_today(ws, TODAY))
+
+
+def test_an_existing_subject_todo_can_be_given_or_cleared_of_a_date(ws):
+    todo_id = ws["academics"]["subjects"][0]["todos"][0]["id"]                        # "Read ch 4", undated, from the fixture
+    w.update_item(ws, todo_id, {"due_date": "2026-10-23", "due_time": "10:30"})
+    assert ws["academics"]["subjects"][0]["todos"][0]["date"] == "2026-10-23"
+    assert any(e["title"] == "Read ch 4" for e in w.list_upcoming(ws, TODAY, 14)["upcoming"])
+    w.update_item(ws, todo_id, {"due_date": "", "due_time": ""})
+    assert not any(e["title"] == "Read ch 4" for e in w.list_upcoming(ws, TODAY, 14)["upcoming"])

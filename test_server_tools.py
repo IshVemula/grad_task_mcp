@@ -171,3 +171,16 @@ def test_dated_career_items_through_the_real_tools(stack):
     # an application has no time: Claude is told to ask rather than guess
     ask = call("add_career_item", kind="application", company="Meta", role="PM", due_date="2026-11-05", due_time="09:00")
     assert ask["needs_clarification"] and len(stack.data["career"]["applications"]) == 0
+
+
+def test_a_dated_subject_todo_through_the_real_tools(stack):
+    out = call("add_academic_item", subject="decision", kind="todo", title="Grade the group projects",
+               due_date="2026-10-29", due_time="5:00 PM")
+    assert out["success"] and out["where"].endswith("→ Things To Do")
+    saved = stack.data["academics"]["subjects"][0]["todos"][0]
+    assert saved["date"] == "2026-10-29" and saved["time"] == "17:00"
+    assert call("update_item", item_id=saved["id"], changes={"due_date": "2026-10-30"})["success"]
+    assert stack.data["academics"]["subjects"][0]["todos"][0]["date"] == "2026-10-30"
+    # a time with no date asks instead of saving
+    ask = call("add_academic_item", subject="decision", kind="todo", title="Call", due_time="09:00")
+    assert ask["needs_clarification"] and len(stack.data["academics"]["subjects"][0]["todos"]) == 1
