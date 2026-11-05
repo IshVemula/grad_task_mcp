@@ -14,8 +14,11 @@ from collections import namedtuple
 from datetime import date, datetime, timedelta
 from typing import Any, Iterator
 
+import standard
+
 AREAS = ("academics", "life_admin", "career", "people", "personal")
 
+SPACE_TYPES = ["Course", "Project", "Club", "Job", "Other"]
 DEADLINE_TYPES = ["Assignment", "Exam", "Project", "Presentation", "Reading", "Quiz"]
 DEADLINE_STATUS = ["Not started", "In progress", "Done"]
 DOC_STATUS = ["Not Started", "In Progress", "Submitted", "Waiting", "Complete"]
@@ -176,9 +179,7 @@ def check_class(item: dict) -> None:
 
 
 def meets_on(c: dict, day: date) -> bool:
-    iso = day.isoformat()
-    return ((day.weekday() + 1) % 7 in c.get("days", [])
-            and (not c.get("from") or iso >= c["from"]) and (not c.get("until") or iso <= c["until"]))
+    return standard.meets_on(c, day.isoformat())
 
 
 def next_session(c: dict, today: date) -> str:
@@ -245,6 +246,13 @@ def find_person(ws: dict, query: str | None) -> dict:
     return next(p for p in ws["people"] if p["id"] == cid)
 
 
+def _link_person(ws: dict, item: dict, person: str | None, field: str = "personId") -> dict:
+    """Store which person an item is with, only when one was named."""
+    if person:
+        item[field] = find_person(ws, person)["id"]
+    return item
+
+
 # --------------------------------------------------------------------------- records
 
 Rec = namedtuple("Rec", "kind area where key container item")
@@ -258,6 +266,8 @@ def iter_records(ws: dict) -> Iterator[Rec]:
             yield Rec("academics.deadline", "academics", f"Academics → {s['name']} → Upcoming Deadlines", s["id"], s["deadlines"], d)
         for t in s["todos"]:
             yield Rec("academics.todo", "academics", f"Academics → {s['name']} → Things To Do", s["id"], s["todos"], t)
+        for ev in s.get("events", []):
+            yield Rec("academics.event", "academics", f"Academics → {s['name']} → Events & Meetings", s["id"], s["events"], ev)
         for m in s["milestones"]:
             yield Rec("academics.milestone", "academics", f"Academics → {s['name']} → Major Milestones", s["id"], s["milestones"], m)
         for c in s.setdefault("schedule", []):
@@ -303,7 +313,7 @@ def _title(item: dict) -> str:
 
 def _when(rec: Rec) -> tuple[str, str]:
     i = rec.item
-    if rec.kind in ("academics.deadline", "academics.milestone", "academics.todo", "life_admin.appointment",
+    if rec.kind in ("academics.deadline", "academics.milestone", "academics.todo", "academics.event", "life_admin.appointment",
                     "personal.recreation", "personal.social", "career.task", "career.networking"):
         return i.get("date", ""), i.get("time", "")
     if rec.kind == "life_admin.document" or rec.kind == "career.application":
@@ -315,19 +325,13 @@ def _when(rec: Rec) -> tuple[str, str]:
     return "", ""
 
 
+def std_kind(kind: str) -> str:
+    """This module's kind names -> the standard view's (they differ only for life admin and spaces)."""
+    return {"academics.subject": "academics.space"}.get(kind, kind.replace("life_admin.", "lifeadmin."))
+
+
 def is_done(rec: Rec) -> bool:
-    i, k = rec.item, rec.kind
-    if k == "academics.deadline":
-        return i.get("status") == "Done"
-    if k == "life_admin.bill":
-        return bool(i.get("paid"))
-    if k == "life_admin.document":
-        return i.get("status") == "Complete"
-    if k == "career.application":
-        return i.get("status") in ("Rejected", "Closed")
-    if k in ("academics.subject", "people.person"):
-        return False
-    return bool(i.get("done"))
+    return standard.is_done(std_kind(rec.kind), rec.item)
 
 
 def summarize(rec: Rec) -> dict:
@@ -353,8 +357,11 @@ def summarize(rec: Rec) -> dict:
         if rec.item.get("last"):
             out["last_contacted"] = rec.item["last"]
     elif rec.kind == "academics.subject":
-        out["professor"] = rec.item.get("professor", "")
+        out["space_type"], out["contact"] = rec.item.get("type", ""), rec.item.get("contact", "")
         out["class_times"] = len(rec.item.get("schedule", []))
+    elif rec.kind == "academics.event":
+        if rec.item.get("endTime"):
+            out["end_time"] = rec.item["endTime"]
     elif rec.kind == "academics.class":
         c = rec.item
         out["repeats_every"], out["start_time"], out["end_time"] = days_label(c["days"]), c.get("start", ""), c.get("end", "")
@@ -365,6 +372,12 @@ def summarize(rec: Rec) -> dict:
             out["last_day"] = c["until"]
         out["next_session"] = next_session(c, today_local())
     out["done"] = is_done(rec)
+    person_field = standard.KINDS[std_kind(rec.kind)].get("person")
+    if person_field and rec.item.get(person_field):
+        out["person_id"] = rec.item[person_field]
+    for key, name in (("createdAt", "created"), ("updatedAt", "last_changed"), ("doneAt", "finished")):
+        if rec.item.get(key):
+            out[name] = rec.item[key]
     return out
 
 
@@ -388,7 +401,8 @@ def overview(ws: dict, today: date) -> dict:
         "academics": {
             "subjects": [
                 {
-                    "id": s["id"], "name": s["name"], "professor": s.get("professor", ""),
+                    "id": s["id"], "name": s["name"], "type": s.get("type", ""), "contact": s.get("contact", ""),
+                    "open_events": sum(1 for e in s.get("events", []) if not e.get("done")),
                     "open_deadlines": sum(1 for d in s["deadlines"] if d.get("status") != "Done"),
                     "open_todos": sum(1 for t in s["todos"] if not t.get("done")),
                     "milestones": len(s["milestones"]),
@@ -396,7 +410,8 @@ def overview(ws: dict, today: date) -> dict:
                 }
                 for s in subjects(ws)
             ],
-            "can_add": "deadline, todo, milestone or a repeating weekly class time on a subject; or a new subject",
+            "can_add": "deadline, todo, event or meeting, milestone or a repeating weekly class time in a space "
+                       "(a course, project, club or job); or a new space",
         },
         "life_admin": {
             "lists": {
@@ -412,11 +427,11 @@ def overview(ws: dict, today: date) -> dict:
         "allowed_values": {
             "deadline_type": DEADLINE_TYPES, "deadline_status": DEADLINE_STATUS,
             "document_status": DOC_STATUS, "application_status": APP_STATUS,
-            "recurring": RECUR, "grocery_group": GROCERY_GROUPS,
+            "recurring": RECUR, "grocery_group": GROCERY_GROUPS, "space_type": SPACE_TYPES,
         },
         "not_supported": [
             "Repeating patterns other than weekly (every other week, monthly): ask the user how they want it handled",
-            "One-off calendar events or meetings (use an Appointment, a person follow-up, or a subject to-do only if the user says so)",
+            "One-off events that belong to no course, project or club (use an Appointment, a person follow-up, or a space's event only if the user says so)",
             "Personal tasks with dates (use Recreation or Social for dated personal items)",
             "Home tasks with due dates (use Appointments & Errands for dated chores)",
         ],
@@ -426,15 +441,9 @@ def overview(ws: dict, today: date) -> dict:
 def dated_entries(ws: dict) -> list[dict]:
     """Everything with a date that is still open (what the website's Today/Upcoming show)."""
     out = []
+    counted = {i["id"] for i in standard.standard_items(ws) if i["dueCounts"]}
     for rec in iter_records(ws):
-        if is_done(rec):
-            continue
-        # An application's single date is a deadline only while you are still to apply; after that
-        # it is just the day you applied, so it never shows as upcoming or overdue.
-        if rec.kind == "career.application" and rec.item.get("status") not in ("Interested", "Preparing"):
-            continue
-        due, time = _when(rec)
-        if not due:
+        if rec.item.get("id") not in counted:
             continue
         entry = summarize(rec)
         entry["area"] = rec.area
@@ -447,16 +456,13 @@ def class_sessions(ws: dict, start: date, days: int) -> list[dict]:
     out = []
     for offset in range(days + 1):
         day = start + timedelta(days=offset)
-        for s in subjects(ws):
-            for c in s.get("schedule", []):
-                if meets_on(c, day):
-                    out.append({
-                        "id": c["id"], "kind": "academics.class_session", "area": "academics",
-                        "where": f"Academics → {s['name']} → Class Schedule",
-                        "title": f"{s['name']} — {c.get('title') or 'Class'}", "due_date": day.isoformat(),
-                        "due_time": c.get("start", ""), "end_time": c.get("end", ""), "location": c.get("location", ""),
-                        "repeating": True,
-                    })
+        for c in standard.class_sessions_on(ws, day.isoformat()):
+            out.append({
+                "id": c["classId"], "kind": "academics.class_session", "area": "academics",
+                "where": f"Academics → {c['spaceName']} → Class Schedule",
+                "title": f"{c['spaceName']} — {c['title'] or 'Class'}", "due_date": c["date"],
+                "due_time": c["start"], "end_time": c["end"], "location": c["location"], "repeating": True,
+            })
     return out
 
 
@@ -547,23 +553,32 @@ def _result(where: str, item: dict, dry_run: bool) -> dict:
     }
 
 
-def add_subject(ws: dict, name: str | None, professor: str | None = None, dry_run: bool = False) -> dict:
-    name = clean(name, "subject name")
+def add_subject(ws: dict, name: str | None, professor: str | None = None, dry_run: bool = False,
+                space_type: str | None = None, contact: str | None = None) -> dict:
+    """A new space: a course, project, club or job. `professor` is the old name for `contact`."""
+    name = clean(name, "name")
     if any(_norm(s["name"]) == _norm(name) for s in subjects(ws)):
-        raise ValueError(f"A subject called '{name}' already exists.")
+        raise ValueError(f"A space called '{name}' already exists.")
     item = {
-        "id": new_id(), "name": name, "professor": clean(professor, "professor", required=False),
+        "id": new_id(), "name": name,
+        "type": to_choice(space_type, SPACE_TYPES, "type of space", default="") if space_type else "",
+        "contact": clean(contact or professor, "contact", required=False),
         "color": SUBJECT_COLORS[len(subjects(ws)) % len(SUBJECT_COLORS)],
-        "deadlines": [], "todos": [], "milestones": [], "schedule": [],
+        "deadlines": [], "todos": [], "milestones": [], "events": [], "schedule": [],
     }
     if not dry_run:
         subjects(ws).append(item)
-    return _result(f"Academics ({ws['academics']['semester']}) → new subject", item, dry_run)
+    return _result(f"Academics ({ws['academics']['semester']}) → new {(item['type'] or 'space').lower()}", item, dry_run)
 
 
-def add_academic_item(ws, subject, kind, title, deadline_type=None, due_date=None, due_time=None, dry_run=False) -> dict:
+def add_academic_item(ws, subject, kind, title, deadline_type=None, due_date=None, due_time=None, dry_run=False,
+                      end_time=None, person=None) -> dict:
     s = find_subject(ws, subject)
-    kind = to_choice(kind, ["deadline", "todo", "milestone"], "kind of academic item")
+    kind = to_choice(kind, ["deadline", "todo", "event", "milestone"], "kind of academic item")
+    if person and kind not in ("todo", "event"):
+        raise ValueError("Only a to-do or an event can be linked to a person.")
+    if end_time and kind != "event":
+        raise ValueError("Only an event has an end time.")
     if kind == "deadline":
         item = {
             "id": new_id(), "title": clean(title, "title"),
@@ -579,6 +594,19 @@ def add_academic_item(ws, subject, kind, title, deadline_type=None, due_date=Non
         item = {"id": new_id(), "text": clean(title, "to-do"), "done": False,
                 "date": to_date(due_date, "date"), "time": to_time(due_time)}
         target, label = s["todos"], "Things To Do"
+        _link_person(ws, item, person)
+    elif kind == "event":
+        item = {
+            "id": new_id(), "title": clean(title, "event"),
+            "date": to_date(due_date, "date", required=True, ask=f"What date is '{title}'?"),
+            "time": to_time(due_time), "endTime": to_time(end_time, "end time"), "location": "", "notes": "", "done": False,
+        }
+        _link_person(ws, item, person)
+        if item["endTime"] and not item["time"]:
+            raise NeedsClarification("What time does it start?")
+        if item["endTime"] and item["endTime"] <= item["time"]:
+            raise ValueError("The end time must be after the start time.")
+        target, label = s.setdefault("events", []), "Events & Meetings"
     else:
         item = {
             "id": new_id(), "title": clean(title, "milestone"),
@@ -655,6 +683,8 @@ def add_life_admin_item(ws, kind, title, due_date=None, due_time=None, status=No
 def add_career_item(ws, kind, title=None, company=None, role=None, due_date=None, status=None,
                     person=None, dry_run=False, due_time=None) -> dict:
     kind = to_choice(kind, ["application", "task", "networking"], "kind of career item")
+    if person and kind == "application":
+        raise ValueError("An application can't be linked to a person. Link a networking item or a career task instead.")
     cr = ws["career"]
     if kind != "application":
         if due_time and not due_date:
@@ -675,6 +705,7 @@ def add_career_item(ws, kind, title=None, company=None, role=None, due_date=None
         item = {"id": new_id(), "text": clean(title, "task"), "done": False,
                 "date": to_date(due_date, "date"), "time": to_time(due_time)}
         target, label = cr["tasks"], "Career Tasks"
+        _link_person(ws, item, person)
     else:
         item = {"id": new_id(), "text": clean(title, "follow-up or event"), "done": False,
                 "personId": find_person(ws, person)["id"] if person else "",
@@ -709,7 +740,7 @@ def add_person_task(ws, person, text, dry_run=False) -> dict:
     return _result(f"People → {p['name']} → Linked Tasks", item, dry_run)
 
 
-def add_personal_item(ws, kind, text, due_date=None, due_time=None, dry_run=False) -> dict:
+def add_personal_item(ws, kind, text, due_date=None, due_time=None, dry_run=False, person=None) -> dict:
     kind = to_choice(kind, ["recreation", "social", "task"], "kind of personal item")
     pr = ws["personal"]
     if kind == "task":
@@ -720,10 +751,12 @@ def add_personal_item(ws, kind, text, due_date=None, due_time=None, dry_run=Fals
             )
         item = {"id": new_id(), "text": clean(text, "task"), "done": False}
         target, label = pr["tasks"], "Personal Tasks"
+        _link_person(ws, item, person)
     else:
         item = {"id": new_id(), "text": clean(text, "item"), "done": False,
                 "date": to_date(due_date, "date"), "time": to_time(due_time)}
         target, label = pr["recreation" if kind == "recreation" else "social"], kind.capitalize()
+        _link_person(ws, item, person)
     if not dry_run:
         target.append(item)
     return _result(f"Personal → {label}", item, dry_run)
@@ -733,14 +766,18 @@ def add_personal_item(ws, kind, text, due_date=None, due_time=None, dry_run=Fals
 
 # tool field name -> (stored key, how to validate)
 EDITABLE: dict[str, dict[str, tuple[str, Any]]] = {
-    "academics.subject": {"name": ("name", "text"), "professor": ("professor", "optional")},
+    "academics.subject": {"name": ("name", "text"), "type": ("type", SPACE_TYPES), "contact": ("contact", "optional"),
+                          "professor": ("contact", "optional")},
     "academics.class": {"title": ("title", "text"), "days": ("days", "days"), "start_time": ("start", "time"),
                         "end_time": ("end", "time"), "location": ("location", "optional"),
                         "first_day": ("from", "date"), "last_day": ("until", "date")},
     "academics.deadline": {"title": ("title", "text"), "type": ("type", DEADLINE_TYPES), "status": ("status", DEADLINE_STATUS),
                            "due_date": ("date", "date"), "due_time": ("time", "time")},
     "academics.todo": {"text": ("text", "text"), "due_date": ("date", "date"), "due_time": ("time", "time"),
-                       "done": ("done", "bool")},
+                       "done": ("done", "bool"), "person": ("personId", "person")},
+    "academics.event": {"title": ("title", "text"), "due_date": ("date", "date"), "due_time": ("time", "time"),
+                        "end_time": ("endTime", "time"), "done": ("done", "bool"), "person": ("personId", "person"),
+                        "notes": ("notes", "notes")},
     "academics.milestone": {"title": ("title", "text"), "due_date": ("date", "date"), "done": ("done", "bool")},
     "life_admin.document": {"name": ("name", "text"), "due_date": ("deadline", "date"), "status": ("status", DOC_STATUS),
                             "link": ("link", "optional"), "notes": ("notes", "notes")},
@@ -753,7 +790,7 @@ EDITABLE: dict[str, dict[str, tuple[str, Any]]] = {
     "career.application": {"company": ("company", "text"), "role": ("role", "text"), "due_date": ("deadline", "date"),
                            "status": ("status", APP_STATUS)},
     "career.task": {"text": ("text", "text"), "due_date": ("date", "date"), "due_time": ("time", "time"),
-                    "done": ("done", "bool")},
+                    "done": ("done", "bool"), "person": ("personId", "person")},
     "career.networking": {"text": ("text", "text"), "due_date": ("date", "date"), "due_time": ("time", "time"),
                           "done": ("done", "bool"), "person": ("personId", "person")},
     "people.person": {"name": ("name", "text"), "organization": ("org", "optional"), "role": ("role", "optional"),
@@ -761,10 +798,10 @@ EDITABLE: dict[str, dict[str, tuple[str, Any]]] = {
                       "next_followup": ("next", "date"), "notes": ("notes", "notes")},
     "people.task": {"text": ("text", "text"), "done": ("done", "bool")},
     "personal.recreation": {"text": ("text", "text"), "due_date": ("date", "date"), "due_time": ("time", "time"),
-                            "done": ("done", "bool")},
+                            "done": ("done", "bool"), "person": ("personId", "person")},
     "personal.social": {"text": ("text", "text"), "due_date": ("date", "date"), "due_time": ("time", "time"),
-                        "done": ("done", "bool")},
-    "personal.task": {"text": ("text", "text"), "done": ("done", "bool")},
+                        "done": ("done", "bool"), "person": ("personId", "person")},
+    "personal.task": {"text": ("text", "text"), "done": ("done", "bool"), "person": ("personId", "person")},
 }
 
 
@@ -804,6 +841,8 @@ def update_item(ws: dict, item_id: str, changes: dict, dry_run: bool = False) ->
     after = {**rec.item, **new_values}
     if rec.kind == "academics.class":
         check_class(after)
+    if rec.kind == "academics.event" and after.get("endTime") and (not after.get("time") or after["endTime"] <= after["time"]):
+        raise ValueError("The end time must come after a start time.")
     if not dry_run:
         rec.item.update(new_values)
     return {
@@ -815,18 +854,10 @@ def update_item(ws: dict, item_id: str, changes: dict, dry_run: bool = False) ->
 def complete_item(ws: dict, item_id: str, done: bool = True, dry_run: bool = False) -> dict:
     rec = find_record(ws, item_id)
     k, i = rec.kind, rec.item
-    if k == "academics.deadline":
-        change = {"status": "Done" if done else "Not started"}
-    elif k == "life_admin.bill":
-        change = {"paid": done}
-    elif k == "life_admin.document":
-        change = {"status": "Complete" if done else "Not Started"}
-    elif k in ("academics.subject", "people.person", "career.application", "academics.class"):
+    if k in ("academics.subject", "people.person", "career.application", "academics.class"):
         raise ValueError(f"A {k.split('.')[1]} can't be marked done. Use update_item to change its fields instead.")
-    else:
-        change = {"done": done}
     if not dry_run:
-        i.update(change)
+        standard.set_done(std_kind(k), i, done)
     word = "complete" if done else "not complete"
     return {"dry_run": dry_run, "where": rec.where, "message":
             ("Would mark " if dry_run else "Marked ") + f"“{_title(i)}” {word}."}
@@ -837,8 +868,8 @@ def delete_item(ws: dict, item_id: str, confirm: bool = False, dry_run: bool = F
     k, i = rec.kind, rec.item
     extra = ""
     if k == "academics.subject":
-        n = len(i["deadlines"]) + len(i["todos"]) + len(i["milestones"]) + len(i.get("schedule", []))
-        extra = f" and its {n} deadlines, to-dos, milestones and class times"
+        n = len(i["deadlines"]) + len(i["todos"]) + len(i["milestones"]) + len(i.get("schedule", [])) + len(i.get("events", []))
+        extra = f" and its {n} deadlines, to-dos, events, milestones and class times"
     elif k == "people.person":
         extra = f" and its {len(i['tasks'])} linked tasks"
     if extra and not confirm and not dry_run:
@@ -848,10 +879,12 @@ def delete_item(ws: dict, item_id: str, confirm: bool = False, dry_run: bool = F
         )
     if not dry_run:
         rec.container[:] = [x for x in rec.container if x is not i]
-        if k == "people.person":
-            for t in ws["career"]["networking"]:
-                if t.get("personId") == i["id"]:
-                    t["personId"] = ""
+        if k == "people.person":                      # anything that was "with" them stays, just unlinked
+            def unlink(kind: str, raw: dict, ctx: dict) -> None:
+                field = standard.KINDS[kind].get("person")
+                if field and raw.get(field) == i["id"]:
+                    raw[field] = ""
+            standard.for_each_raw(ws, unlink)
     return {"dry_run": dry_run, "where": rec.where, "message":
             ("Would delete " if dry_run else "Deleted ") + f"“{_title(i)}”{extra} from {rec.where}."}
 

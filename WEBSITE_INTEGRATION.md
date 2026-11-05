@@ -26,11 +26,12 @@ In that case they return a question instead, Claude asks you, and **nothing is s
 
 Examples that make Claude ask first:
 
-- A subject, person, or list that doesn't exist yet ("Which subject? Or should I create it?")
+- A space (course, project, club or job), person, or list that doesn't exist yet ("Which one? Or should I create it?")
 - A deadline with no date, a bill with no amount
 - A date on something that can't have one (a to-do, a home chore, a personal task)
-- Things the website has no place for: one-off calendar events, meetings that aren't weekly, or anything that
-  repeats less often than weekly. (Weekly classes, labs and meetings *do* have a place: a subject's Class Schedule.)
+- Things the website has no place for: events that belong to no course, project or club, or anything that
+  repeats less often than weekly. (Weekly classes and meetings have a place: a space's Class Schedule. One-off
+  events and meetings in a space go under its Events & Meetings.)
 
 Add `dry_run` to any add/change tool to preview exactly where something would land without saving.
 
@@ -38,14 +39,14 @@ Add `dry_run` to any add/change tool to preview exactly where something would la
 
 | Read | Add | Change |
 |---|---|---|
-| `get_workspace_overview` | `add_subject` | `update_item` |
-| `list_today` | `add_academic_item` (deadline / to-do / milestone) | `complete_item` |
+| `get_workspace_overview` | `add_subject` (a course, project, club or job) | `update_item` |
+| `list_today` | `add_academic_item` (deadline / to-do / event / milestone) | `complete_item` |
 | `list_upcoming` | `add_life_admin_item` (document / home / grocery / bill / appointment) | `delete_item` |
 | | `add_class_time` (repeats weekly: days, start/end, location) | |
 | `list_items` | `add_career_item` (application / task / networking) | |
 | `find_items` | `add_person`, `add_person_task`, `add_personal_item` | |
 
-Deleting a subject or a person also deletes what's inside it, so `delete_item` asks for confirmation first.
+Deleting a space or a person also deletes what's inside it, so `delete_item` asks for confirmation first.
 
 ## How it stays in sync with the site
 
@@ -71,3 +72,12 @@ changes made elsewhere item by item and refreshes itself every ~20 seconds while
 `test_workspace.py` covers placement and the ask-first rules, `test_supabase_client.py` covers sign-in and
 versioned saves against a fake Supabase (including the website saving mid-way), and
 `test_server_tools.py` calls the real tools end to end.
+
+## One shared definition of the data
+
+`standard.py` is a port of the website's `lib/standard.js`. It decides what each kind of item is, what counts as
+done, and what is due, so Claude, the site and the morning email agree. Every write through these tools also
+records when an item was created, last changed and finished (`createdAt`, `updatedAt`, `doneAt`), and an older
+workspace is upgraded to the current version the first time it is saved. `test_standard.py` checks the port against
+`golden/expected.json`, copied from the website repo (`test/golden/`); if you change the rules on purpose, change
+both sides and refresh those files.

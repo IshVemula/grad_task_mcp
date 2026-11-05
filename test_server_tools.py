@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import date
 
 import pytest
 
@@ -35,8 +36,8 @@ def stack(monkeypatch):
     fake.close()
 
 
-def call(name, **arguments):
-    result = asyncio.run(server.mcp.call_tool(name, arguments))
+def call(tool, /, **arguments):
+    result = asyncio.run(server.mcp.call_tool(tool, arguments))
     assert not result.is_error, result.content
     if result.structured_content:
         return result.structured_content
@@ -184,3 +185,64 @@ def test_a_dated_subject_todo_through_the_real_tools(stack):
     # a time with no date asks instead of saving
     ask = call("add_academic_item", subject="decision", kind="todo", title="Call", due_time="09:00")
     assert ask["needs_clarification"] and len(stack.data["academics"]["subjects"][0]["todos"]) == 1
+
+
+def test_an_event_in_a_space_with_a_person_through_the_real_tools(stack):
+    call("add_person", name="Dr. Puga")
+    out = call("add_academic_item", subject="decision", kind="event", title="Office hours", due_date=date.today().isoformat(),
+               due_time="3:00 PM", end_time="4:00 PM", person="puga")
+    assert out["success"] and out["where"].endswith("→ Events & Meetings")
+    saved = stack.data["academics"]["subjects"][0]["events"][0]
+    assert saved["date"] == date.today().isoformat() and saved["time"] == "15:00" and saved["endTime"] == "16:00"
+    assert saved["personId"] == stack.data["people"][0]["id"]
+    # an event needs a date; a bad end time is refused; nothing extra was saved
+    assert call("add_academic_item", subject="decision", kind="event", title="No date")["needs_clarification"]
+    bad = call("add_academic_item", subject="decision", kind="event", title="Backwards", due_date="2026-11-05",
+               due_time="16:00", end_time="15:00")
+    assert bad["success"] is False and len(stack.data["academics"]["subjects"][0]["events"]) == 1
+    # it shows up in Today and can be completed
+    today = call("list_upcoming", days=365)
+    assert any(e["title"] == "Office hours" and e["person_id"] for e in today["overdue"] + today["upcoming"])
+    assert call("complete_item", item_id=saved["id"])["success"] and stack.data["academics"]["subjects"][0]["events"][0]["done"]
+
+
+def test_a_new_space_has_a_type_and_a_contact_and_an_old_workspace_is_upgraded_on_save(stack):
+    out = call("add_subject", name="Robotics Club", space_type="Club", contact="Maya")
+    assert out["success"] and out["where"].endswith("new club")
+    ws = stack.data
+    assert ws["schemaVersion"] == 2
+    new = next(s for s in ws["academics"]["subjects"] if s["name"] == "Robotics Club")
+    assert (new["type"], new["contact"], new["events"]) == ("Club", "Maya", [])
+    # the sample workspace was the old shape: its spaces were upgraded without losing anything
+    assert all("professor" not in s and "contact" in s and "events" in s for s in ws["academics"]["subjects"])
+    assert call("update_item", item_id=new["id"], changes={"type": "Project", "contact": "Sam"})["success"]
+    saved = next(s for s in stack.data["academics"]["subjects"] if s["name"] == "Robotics Club")
+    assert (saved["type"], saved["contact"]) == ("Project", "Sam")
+    assert call("update_item", item_id=new["id"], changes={"type": "Hobby"})["success"] is False
+
+
+def test_every_write_records_created_changed_and_finished_times(stack):
+    call("add_academic_item", subject="decision", kind="todo", title="Read ch 4")
+    todo = stack.data["academics"]["subjects"][0]["todos"][0]
+    assert todo["createdAt"] and todo["updatedAt"] and not todo["doneAt"]
+    call("complete_item", item_id=todo["id"])
+    todo = stack.data["academics"]["subjects"][0]["todos"][0]
+    assert todo["doneAt"] and todo["done"] is True
+    found = call("find_items", query="Read ch 4")["items"][0]
+    assert found["created"] and found["finished"]
+    call("complete_item", item_id=todo["id"], done=False)
+    assert stack.data["academics"]["subjects"][0]["todos"][0]["doneAt"] == ""
+    # a preview records nothing and saves nothing
+    patches = stack.patches
+    call("add_academic_item", subject="decision", kind="todo", title="Just looking", dry_run=True)
+    assert stack.patches == patches
+
+
+def test_deleting_a_person_unlinks_whatever_was_with_them(stack):
+    call("add_person", name="Dr. Puga")
+    call("add_academic_item", subject="decision", kind="todo", title="Email about scope", person="puga")
+    call("add_personal_item", kind="social", text="Lunch", due_date="2026-11-09", person="puga")
+    pid = stack.data["people"][0]["id"]
+    assert call("delete_item", item_id=pid, confirm=True)["success"]
+    assert stack.data["academics"]["subjects"][0]["todos"][0]["personId"] == ""
+    assert stack.data["personal"]["social"][0]["personId"] == ""

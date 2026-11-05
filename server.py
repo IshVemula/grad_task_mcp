@@ -6,6 +6,7 @@ from pydantic import Field
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
+import standard
 import workspace as ws_ops
 from config import APP_NAME, setting
 from security import check_rate_limit
@@ -17,9 +18,11 @@ INSTRUCTIONS = """
 These tools read and change the user's Marginalia website: their personal planner for graduate school.
 It has five areas, and every item lives in one specific list:
 
-- Academics: subjects (grouped by semester). Each subject has Upcoming Deadlines (dated: assignment, exam,
-  project, presentation, reading, quiz), Class Schedule (classes, labs or meetings that repeat weekly on set
-  days and times), Things To Do (optional date and time), and Major Milestones (dated).
+- Academics: spaces (grouped by semester). A space is a course, project, club or job, with an optional contact
+  (professor, advisor, lead). Each space has Upcoming Deadlines (dated: assignment, exam, project, presentation,
+  reading, quiz), Class Schedule (classes, labs or meetings that repeat weekly on set days and times), Things To
+  Do (optional date and time), Events & Meetings (one-off, dated, optional start and end time), and Major
+  Milestones (dated). To-dos and events can say which person they are "with".
 - Life Admin: Documents, Home tasks, Groceries, Bills & Utilities, Appointments & Errands.
 - Career: Applications (one date), Career Tasks and Networking follow-ups/events (both can have a date and time).
 - People: a lightweight contact list; each person has linked tasks and follow-up dates.
@@ -28,16 +31,16 @@ It has five areas, and every item lives in one specific list:
 RULES FOR PLACING THINGS
 1. The user decides where things go. Use the destination they named. Never guess an area, subject, person,
    or list. If they did not say, or you are not sure, ask them BEFORE calling any add tool.
-2. If something does not fit any list above (for example one-off calendar events, meetings that aren't
-   weekly, or anything that repeats less often than weekly), do not force it into the closest list. Tell the
+2. If something does not fit any list above (for example an event that belongs to no course, project or
+   club, or anything that repeats less often than weekly), do not force it into the closest list. Tell the
    user it has no natural home on the site and ask where they want it. Weekly classes, labs and meetings
    belong in a subject's Class Schedule: use add_class_time, not a deadline.
 3. If a tool returns needs_clarification, nothing was saved. Ask the user its question, wait for the
    answer, and only then try again.
-4. Call get_workspace_overview first if you need the real subject and people names. Use dry_run=true to
+4. Call get_workspace_overview first if you need the real space and people names. Use dry_run=true to
    preview exactly where something will land when the placement is not obvious.
 5. Report where each item landed using the "where" field in the result.
-6. Never delete or overwrite anything the user did not ask you to. Ask before deleting subjects or people.
+6. Never delete or overwrite anything the user did not ask you to. Ask before deleting spaces or people.
 """.strip()
 
 mcp = MCPServer(APP_NAME, instructions=INSTRUCTIONS)
@@ -69,7 +72,11 @@ def _guard(run) -> dict:
 
 
 def _read(op) -> dict:
-    return _guard(lambda: {"success": True, **op(client().snapshot())})
+    def run(workspace: dict) -> dict:
+        standard.migrate(workspace)               # an older workspace is read as the current shape (nothing is saved)
+        return op(workspace)
+
+    return _guard(lambda: {"success": True, **run(client().snapshot())})
 
 
 def _write(op, dry_run: bool) -> dict:
@@ -78,7 +85,12 @@ def _write(op, dry_run: bool) -> dict:
             check_rate_limit(limit=WRITE_LIMIT_PER_MINUTE)
 
         def change(workspace: dict) -> tuple[dict, bool]:
-            return op(workspace), not dry_run
+            standard.migrate(workspace)
+            before = standard.snapshot(workspace)
+            result = op(workspace)
+            if not dry_run:
+                standard.stamp(workspace, before)  # created / last changed / finished times, as the website records them
+            return result, not dry_run
 
         return {"success": True, **client().update(change)}
 
@@ -167,32 +179,38 @@ def find_items(
 
 
 @mcp.tool(
-    title="Add Subject",
+    title="Add Space",
     description=(
-        "Create a new subject in the current semester. Only do this when the user has asked for a new subject."
+        "Create a new space (a course, project, club or job) in the current semester. Only do this when the user "
+        "has asked for one. Pass the type when you know it: do not guess it."
     ),
     annotations=ADDS,
 )
 def add_subject(
     name: Title,
-    professor: Annotated[str | None, Field(description="Optional professor name.")] = None,
+    space_type: Annotated[Literal["Course", "Project", "Club", "Job", "Other"] | None,
+                          Field(description="What kind of space it is. Leave out if the user did not say.")] = None,
+    contact: Annotated[str | None, Field(description="Optional: the professor, advisor or lead.")] = None,
+    professor: Annotated[str | None, Field(description="Old name for contact; use contact.")] = None,
     dry_run: DryRun = False,
 ) -> dict:
-    return _write(lambda w: ws_ops.add_subject(w, name, professor, dry_run), dry_run)
+    return _write(lambda w: ws_ops.add_subject(w, name, professor, dry_run, space_type, contact), dry_run)
 
 
 @mcp.tool(
     title="Add Academic Item",
     description=(
-        "Add to ONE existing subject: a deadline (needs a due date; types: Assignment, Exam, Project, "
-        "Presentation, Reading, Quiz), a to-do (optional date and time; dated to-dos show on Today and Upcoming), or a milestone (needs a date). The user must have "
-        "said which subject; if the subject doesn't exist yet this asks instead of creating it."
+        "Add to ONE existing space: a deadline (needs a due date; types: Assignment, Exam, Project, "
+        "Presentation, Reading, Quiz), a to-do (optional date and time), an event or meeting (needs a date; "
+        "optional start and end time), or a milestone (needs a date). Dated items show on Today and Upcoming. "
+        "To-dos and events can be linked to an existing person with `person`. The user must have said which "
+        "space; if it doesn't exist yet this asks instead of creating it."
     ),
     annotations=ADDS,
 )
 def add_academic_item(
     subject: Subject,
-    kind: Annotated[Literal["deadline", "todo", "milestone"], Field(description="What kind of item.")],
+    kind: Annotated[Literal["deadline", "todo", "event", "milestone"], Field(description="What kind of item.")],
     title: Title,
     deadline_type: Annotated[
         Literal["Assignment", "Exam", "Project", "Presentation", "Reading", "Quiz"] | None,
@@ -201,9 +219,13 @@ def add_academic_item(
     due_date: DueDate = None,
     due_time: DueTime = None,
     dry_run: DryRun = False,
+    end_time: Annotated[str | None, Field(description="Events only: when it ends, like 16:00 or 4:00 PM.")] = None,
+    person: Annotated[str | None, Field(description="To-dos and events: an existing person it is with.")] = None,
 ) -> dict:
     return _write(
-        lambda w: ws_ops.add_academic_item(w, subject, kind, title, deadline_type, due_date, due_time, dry_run), dry_run
+        lambda w: ws_ops.add_academic_item(w, subject, kind, title, deadline_type, due_date, due_time, dry_run,
+                                           end_time, person),
+        dry_run,
     )
 
 
@@ -290,7 +312,7 @@ def add_career_item(
         Literal["Interested", "Preparing", "Applied", "Interview", "Waiting", "Offer", "Rejected", "Closed"] | None,
         Field(description="Applications only. Defaults to Interested."),
     ] = None,
-    person: Annotated[str | None, Field(description="Networking only: an existing person to link.")] = None,
+    person: Annotated[str | None, Field(description="Networking or a career task: an existing person to link.")] = None,
     dry_run: DryRun = False,
 ) -> dict:
     return _write(
@@ -347,8 +369,9 @@ def add_personal_item(
     due_date: DueDate = None,
     due_time: DueTime = None,
     dry_run: DryRun = False,
+    person: Annotated[str | None, Field(description="An existing person it is with (optional).")] = None,
 ) -> dict:
-    return _write(lambda w: ws_ops.add_personal_item(w, kind, text, due_date, due_time, dry_run), dry_run)
+    return _write(lambda w: ws_ops.add_personal_item(w, kind, text, due_date, due_time, dry_run, person), dry_run)
 
 
 # ----------------------------------------------------------------------- changing
@@ -359,8 +382,9 @@ def add_personal_item(
     description=(
         "Change fields on an existing item, found by id (use find_items or list_items first). Field names: "
         "title/text/name, due_date, due_time, status, type, notes, link, amount, recurring, group, role, "
-        "company, organization, how_i_know_them, last_contacted, next_followup, person, done, "
-        "paid; for class times: days (e.g. [\"Tue\", \"Thu\"]), start_time, end_time, location, first_day, last_day. Use an empty string to clear a date or text field. Only fields that exist on that kind of "
+        "company, organization, how_i_know_them, last_contacted, next_followup, person (an existing person "
+        "it is with; empty to unlink), done, paid; for spaces: name, type (Course/Project/Club/Job/Other), contact; "
+        "for events: title, due_date, due_time, end_time, notes; for class times: days (e.g. [\"Tue\", \"Thu\"]), start_time, end_time, location, first_day, last_day. Use an empty string to clear a date or text field. Only fields that exist on that kind of "
         "item are accepted."
     ),
     annotations=EDITS,
@@ -392,14 +416,14 @@ def complete_item(
 @mcp.tool(
     title="Delete Item",
     description=(
-        "Permanently delete one item by id. Deleting a subject or a person also deletes everything inside "
+        "Permanently delete one item by id. Deleting a space or a person also deletes everything inside "
         "it, so it asks for confirmation first. Only delete what the user asked you to delete."
     ),
     annotations=DELETES,
 )
 def delete_item(
     item_id: ItemId,
-    confirm: Annotated[bool, Field(description="Set true only after the user has agreed to delete a subject or person.")] = False,
+    confirm: Annotated[bool, Field(description="Set true only after the user has agreed to delete a space or person.")] = False,
     dry_run: DryRun = False,
 ) -> dict:
     return _write(lambda w: ws_ops.delete_item(w, item_id, confirm, dry_run), dry_run)
